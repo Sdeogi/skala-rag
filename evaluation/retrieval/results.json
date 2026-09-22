@@ -1,7 +1,7 @@
 {
   "k": 5,
   "hit_rate_at_k": 0.65,
-  "mrr_at_k": 0.33666666666666667,
+  "mrr_at_k": 0.4033333333333333,
   "results": [
     {
       "id": "kivi-01",
@@ -9,19 +9,19 @@
       "category": "principle",
       "query": "KIVI는 Key 캐시와 Value 캐시를 각각 어떤 축으로 양자화하는가?",
       "expected_evidence_ids": [
-        "KIVI-p2-3",
-        "KIVI-p4-7",
-        "KIVI-p9-3"
+        "KIVI-p4-1",
+        "KIVI-p5-2",
+        "KIVI-p9-4"
       ],
       "retrieved_evidence_ids": [
-        "KIVI-p4-0",
         "KIVI-p6-0",
-        "KIVI-p9-3",
-        "KIVI-p8-0",
-        "KIVI-p6-6"
+        "KIVI-p9-4",
+        "KIVI-p4-0",
+        "KIVI-p2-1",
+        "KIVI-p10-0"
       ],
       "hit": true,
-      "reciprocal_rank": 0.3333333333333333
+      "reciprocal_rank": 0.5
     },
     {
       "id": "kivi-02",
@@ -34,11 +34,11 @@
         "KIVI-p1-2"
       ],
       "retrieved_evidence_ids": [
-        "KIVI-p6-6",
         "KIVI-p8-1",
+        "KIVI-p6-5",
         "KIVI-p1-0",
-        "KIVI-p4-0",
-        "KIVI-p9-3"
+        "KIVI-p9-4",
+        "KIVI-p14-1"
       ],
       "hit": true,
       "reciprocal_rank": 0.3333333333333333
@@ -49,14 +49,14 @@
       "category": "experimental_setup",
       "query": "KIVI 실험에 사용된 모델은 어떤 것들인가?",
       "expected_evidence_ids": [
-        "KIVI-p6-2"
+        "KIVI-p6-1"
       ],
       "retrieved_evidence_ids": [
-        "KIVI-p1-2",
-        "KIVI-p8-1",
         "KIVI-p10-0",
-        "KIVI-p13-2",
-        "KIVI-p6-2"
+        "KIVI-p8-1",
+        "KIVI-p9-1",
+        "KIVI-p14-1",
+        "KIVI-p6-1"
       ],
       "hit": true,
       "reciprocal_rank": 0.2
@@ -67,18 +67,18 @@
       "category": "experimental_setup",
       "query": "KIVI 성능 평가에 사용된 벤치마크나 태스크는 무엇인가?",
       "expected_evidence_ids": [
-        "KIVI-p6-3",
+        "KIVI-p6-2",
         "KIVI-p6-4"
       ],
       "retrieved_evidence_ids": [
-        "KIVI-p6-2",
-        "KIVI-p14-0",
         "KIVI-p6-4",
-        "KIVI-p9-0",
-        "KIVI-p8-1"
+        "KIVI-p6-1",
+        "KIVI-p8-1",
+        "KIVI-p14-0",
+        "KIVI-p8-2"
       ],
       "hit": true,
-      "reciprocal_rank": 0.3333333333333333
+      "reciprocal_rank": 1.0
     },
     {
       "id": "kivi-05",
@@ -89,14 +89,14 @@
         "KIVI-p8-2"
       ],
       "retrieved_evidence_ids": [
-        "KIVI-p1-2",
-        "KIVI-p13-2",
-        "KIVI-p8-1",
         "KIVI-p8-2",
+        "KIVI-p8-1",
+        "KIVI-p13-2",
+        "KIVI-p10-0",
         "KIVI-p14-0"
       ],
       "hit": true,
-      "reciprocal_rank": 0.25
+      "reciprocal_rank": 1.0
     },
     {
       "id": "kivi-06",
@@ -104,13 +104,13 @@
       "category": "performance",
       "query": "KIVI의 정확도는 16비트 대비 얼마나 저하되는가?",
       "expected_evidence_ids": [
-        "KIVI-p3-1"
+        "KIVI-p6-4"
       ],
       "retrieved_evidence_ids": [
         "KIVI-p8-1",
+        "KIVI-p14-1",
         "KIVI-p13-2",
         "KIVI-p8-2",
-        "KIVI-p9-0",
         "KIVI-p14-0"
       ],
       "hit": false,
@@ -122,15 +122,15 @@
       "category": "limitations",
       "query": "KIVI에서 residual length나 group size 같은 하이퍼파라미터가 성능에 미치는 영향은?",
       "expected_evidence_ids": [
-        "KIVI-p7-3",
+        "KIVI-p7-2",
         "KIVI-p9-2"
       ],
       "retrieved_evidence_ids": [
-        "KIVI-p7-3",
+        "KIVI-p7-2",
         "KIVI-p13-2",
-        "KIVI-p14-0",
-        "KIVI-p9-2",
-        "KIVI-p1-2"
+        "KIVI-p9-1",
+        "KIVI-p8-2",
+        "KIVI-p14-3"
       ],
       "hit": true,
       "reciprocal_rank": 1.0
@@ -141,14 +141,14 @@
       "category": "limitations",
       "query": "KIVI는 어떤 종류의 태스크에서 평가하기 어려운가?",
       "expected_evidence_ids": [
-        "KIVI-p6-5"
+        "KIVI-p6-2"
       ],
       "retrieved_evidence_ids": [
         "KIVI-p8-1",
-        "KIVI-p14-0",
-        "KIVI-p9-0",
-        "KIVI-p1-2",
-        "KIVI-p6-2"
+        "KIVI-p14-1",
+        "KIVI-p10-0",
+        "KIVI-p15-0",
+        "KIVI-p6-0"
       ],
       "hit": false,
       "reciprocal_rank": 0.0
@@ -163,11 +163,11 @@
         "KIVI-p5-3"
       ],
       "retrieved_evidence_ids": [
+        "KIVI-p2-1",
+        "KIVI-p10-0",
         "KIVI-p6-0",
-        "KIVI-p9-2",
-        "KIVI-p6-6",
-        "KIVI-p14-0",
-        "KIVI-p2-1"
+        "KIVI-p2-2",
+        "KIVI-p6-5"
       ],
       "hit": false,
       "reciprocal_rank": 0.0
@@ -178,14 +178,14 @@
       "category": "experimental_setup",
       "query": "KIVI의 효율성(지연시간) 평가는 어떤 방식으로 진행되었는가?",
       "expected_evidence_ids": [
-        "KIVI-p7-4"
+        "KIVI-p7-3"
       ],
       "retrieved_evidence_ids": [
-        "KIVI-p7-4",
-        "KIVI-p9-0",
+        "KIVI-p7-3",
         "KIVI-p8-1",
-        "KIVI-p14-0",
-        "KIVI-p6-2"
+        "KIVI-p14-1",
+        "KIVI-p9-0",
+        "KIVI-p10-0"
       ],
       "hit": true,
       "reciprocal_rank": 1.0
@@ -196,18 +196,19 @@
       "category": "principle",
       "query": "InfiniGen은 어떤 방식으로 중요한 KV를 미리 예측하고 가져오는가?",
       "expected_evidence_ids": [
+        "InfiniGen-p6-3",
         "InfiniGen-p6-4",
         "InfiniGen-p1-4"
       ],
       "retrieved_evidence_ids": [
         "InfiniGen-p2-1",
+        "InfiniGen-p1-4",
         "InfiniGen-p6-2",
         "InfiniGen-p2-0",
-        "InfiniGen-p1-4",
         "InfiniGen-p9-0"
       ],
       "hit": true,
-      "reciprocal_rank": 0.25
+      "reciprocal_rank": 0.5
     },
     {
       "id": "infinigen-02",
@@ -221,9 +222,9 @@
       "retrieved_evidence_ids": [
         "InfiniGen-p9-0",
         "InfiniGen-p8-1",
+        "InfiniGen-p12-3",
         "InfiniGen-p2-1",
-        "InfiniGen-p14-3",
-        "InfiniGen-p14-2"
+        "InfiniGen-p14-3"
       ],
       "hit": false,
       "reciprocal_rank": 0.0
@@ -241,7 +242,7 @@
         "InfiniGen-p2-1",
         "InfiniGen-p9-3",
         "InfiniGen-p9-0",
-        "InfiniGen-p14-4"
+        "InfiniGen-p10-3"
       ],
       "hit": true,
       "reciprocal_rank": 0.3333333333333333
@@ -255,11 +256,11 @@
         "InfiniGen-p9-4"
       ],
       "retrieved_evidence_ids": [
+        "InfiniGen-p12-3",
         "InfiniGen-p9-0",
-        "InfiniGen-p1-1",
         "InfiniGen-p2-1",
-        "InfiniGen-p14-4",
-        "InfiniGen-p1-3"
+        "InfiniGen-p10-2",
+        "InfiniGen-p14-4"
       ],
       "hit": false,
       "reciprocal_rank": 0.0
@@ -273,14 +274,14 @@
         "InfiniGen-p2-1"
       ],
       "retrieved_evidence_ids": [
-        "InfiniGen-p2-1",
         "InfiniGen-p12-3",
-        "InfiniGen-p12-1",
-        "InfiniGen-p1-1",
+        "InfiniGen-p2-1",
+        "InfiniGen-p12-0",
+        "InfiniGen-p1-0",
         "InfiniGen-p14-4"
       ],
       "hit": true,
-      "reciprocal_rank": 1.0
+      "reciprocal_rank": 0.5
     },
     {
       "id": "infinigen-06",
@@ -288,13 +289,14 @@
       "category": "performance",
       "query": "InfiniGen 적용 시 KV 캐시 사용량은 평균적으로 얼마나 줄어드는가?",
       "expected_evidence_ids": [
+        "InfiniGen-p9-4",
         "InfiniGen-p9-5"
       ],
       "retrieved_evidence_ids": [
-        "InfiniGen-p2-1",
         "InfiniGen-p12-3",
-        "InfiniGen-p1-1",
-        "InfiniGen-p1-3",
+        "InfiniGen-p2-1",
+        "InfiniGen-p10-2",
+        "InfiniGen-p1-4",
         "InfiniGen-p2-0"
       ],
       "hit": false,
@@ -324,14 +326,14 @@
       "category": "limitations",
       "query": "InfiniGen이 부분 가중치(partial weight)를 압축할 수 있는 한계는 무엇인가?",
       "expected_evidence_ids": [
-        "InfiniGen-p13-3"
+        "InfiniGen-p13-2"
       ],
       "retrieved_evidence_ids": [
-        "InfiniGen-p1-4",
-        "InfiniGen-p12-3",
         "InfiniGen-p2-1",
         "InfiniGen-p9-0",
-        "InfiniGen-p2-0"
+        "InfiniGen-p12-3",
+        "InfiniGen-p2-0",
+        "InfiniGen-p13-1"
       ],
       "hit": false,
       "reciprocal_rank": 0.0
@@ -348,9 +350,9 @@
       "retrieved_evidence_ids": [
         "InfiniGen-p6-2",
         "InfiniGen-p1-4",
-        "InfiniGen-p1-3",
         "InfiniGen-p2-1",
-        "InfiniGen-p2-0"
+        "InfiniGen-p2-0",
+        "InfiniGen-p6-3"
       ],
       "hit": true,
       "reciprocal_rank": 0.5
@@ -365,10 +367,10 @@
       ],
       "retrieved_evidence_ids": [
         "InfiniGen-p13-4",
-        "InfiniGen-p10-2",
-        "InfiniGen-p9-0",
         "InfiniGen-p11-3",
-        "InfiniGen-p10-4"
+        "InfiniGen-p9-0",
+        "InfiniGen-p10-0",
+        "InfiniGen-p9-4"
       ],
       "hit": true,
       "reciprocal_rank": 1.0

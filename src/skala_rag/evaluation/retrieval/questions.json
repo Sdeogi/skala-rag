@@ -6,7 +6,7 @@
       "category": "principle",
       "query": "KIVI는 Key 캐시와 Value 캐시를 각각 어떤 축으로 양자화하는가?",
       "query_en": "Along which axis does KIVI quantize the key cache versus the value cache?",
-      "expected_evidence_ids": ["KIVI-p2-3", "KIVI-p4-7", "KIVI-p9-3"]
+      "expected_evidence_ids": ["KIVI-p4-1", "KIVI-p5-2", "KIVI-p9-4"]
     },
     {
       "id": "kivi-02",
@@ -22,7 +22,7 @@
       "category": "experimental_setup",
       "query": "KIVI 실험에 사용된 모델은 어떤 것들인가?",
       "query_en": "Which models were used in the KIVI experiments?",
-      "expected_evidence_ids": ["KIVI-p6-2"]
+      "expected_evidence_ids": ["KIVI-p6-1"]
     },
     {
       "id": "kivi-04",
@@ -30,7 +30,7 @@
       "category": "experimental_setup",
       "query": "KIVI 성능 평가에 사용된 벤치마크나 태스크는 무엇인가?",
       "query_en": "Which benchmarks or tasks were used to evaluate KIVI?",
-      "expected_evidence_ids": ["KIVI-p6-3", "KIVI-p6-4"]
+      "expected_evidence_ids": ["KIVI-p6-2", "KIVI-p6-4"]
     },
     {
       "id": "kivi-05",
@@ -46,7 +46,7 @@
       "category": "performance",
       "query": "KIVI의 정확도는 16비트 대비 얼마나 저하되는가?",
       "query_en": "How much does KIVI's accuracy drop compared to 16-bit?",
-      "expected_evidence_ids": ["KIVI-p3-1"]
+      "expected_evidence_ids": ["KIVI-p6-4"]
     },
     {
       "id": "kivi-07",
@@ -54,7 +54,7 @@
       "category": "limitations",
       "query": "KIVI에서 residual length나 group size 같은 하이퍼파라미터가 성능에 미치는 영향은?",
       "query_en": "How do hyperparameters like residual length and group size affect KIVI's performance?",
-      "expected_evidence_ids": ["KIVI-p7-3", "KIVI-p9-2"]
+      "expected_evidence_ids": ["KIVI-p7-2", "KIVI-p9-2"]
     },
     {
       "id": "kivi-08",
@@ -62,7 +62,7 @@
       "category": "limitations",
       "query": "KIVI는 어떤 종류의 태스크에서 평가하기 어려운가?",
       "query_en": "What kinds of tasks are not ideal for evaluating KIVI?",
-      "expected_evidence_ids": ["KIVI-p6-5"]
+      "expected_evidence_ids": ["KIVI-p6-2"]
     },
     {
       "id": "kivi-09",
@@ -78,7 +78,7 @@
       "category": "experimental_setup",
       "query": "KIVI의 효율성(지연시간) 평가는 어떤 방식으로 진행되었는가?",
       "query_en": "How was KIVI's wall-clock time efficiency evaluated?",
-      "expected_evidence_ids": ["KIVI-p7-4"]
+      "expected_evidence_ids": ["KIVI-p7-3"]
     },
     {
       "id": "infinigen-01",
@@ -86,7 +86,7 @@
       "category": "principle",
       "query": "InfiniGen은 어떤 방식으로 중요한 KV를 미리 예측하고 가져오는가?",
       "query_en": "How does InfiniGen speculatively predict and prefetch important KV entries?",
-      "expected_evidence_ids": ["InfiniGen-p6-4", "InfiniGen-p1-4"]
+      "expected_evidence_ids": ["InfiniGen-p6-3", "InfiniGen-p6-4", "InfiniGen-p1-4"]
     },
     {
       "id": "infinigen-02",
@@ -126,7 +126,7 @@
       "category": "performance",
       "query": "InfiniGen 적용 시 KV 캐시 사용량은 평균적으로 얼마나 줄어드는가?",
       "query_en": "On average, how much does InfiniGen reduce KV cache usage?",
-      "expected_evidence_ids": ["InfiniGen-p9-5"]
+      "expected_evidence_ids": ["InfiniGen-p9-4", "InfiniGen-p9-5"]
     },
     {
       "id": "infinigen-07",
@@ -142,7 +142,7 @@
       "category": "limitations",
       "query": "InfiniGen이 부분 가중치(partial weight)를 압축할 수 있는 한계는 무엇인가?",
       "query_en": "What is the limit on how much InfiniGen can compress the partial weights?",
-      "expected_evidence_ids": ["InfiniGen-p13-3"]
+      "expected_evidence_ids": ["InfiniGen-p13-2"]
     },
     {
       "id": "infinigen-09",

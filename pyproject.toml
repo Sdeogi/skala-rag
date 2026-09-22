@@ -39,6 +39,7 @@ dependencies = [
     "yfinance>=0.2.66",
     "ragas>=0.4.3",
     "langgraph-swarm>=0.1.0",
+    "pymupdf>=1.28.2",
 ]
 
 [dependency-groups]
