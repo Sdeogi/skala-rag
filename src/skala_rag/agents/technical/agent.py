@@ -10,6 +10,7 @@ LLM이 존재하지 않는 evidence_id를 인용하면(설계서 D.4 가드레�
 from __future__ import annotations
 
 import os
+from difflib import SequenceMatcher
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
@@ -21,6 +22,9 @@ from .schemas import CategoryFindings, ClaimType, Evidence, TechFindings, Techni
 
 MODEL_ENV_VAR = "TECHNICAL_AGENT_MODEL"
 DEFAULT_MODEL = "gpt-4o-mini"  # 설계서는 gpt-5.4-mini를 지정하나 실존 모델명이 불확실해 env로 override 가능하게 함
+# 어떤 질문에도 답이 될 수 없는 메타데이터 섹션(설계서 B.7: 관련 없는 내용은 근거로 쓰지 않음).
+_EXCLUDED_SECTIONS = {"acknowledgments", "acknowledgements"}
+_DUPLICATE_CLAIM_SIMILARITY_THRESHOLD = 0.8
 
 
 class _ExtractedClaim(BaseModel):
@@ -81,6 +85,16 @@ def _validate_claims(
     return valid, invalid
 
 
+def _is_near_duplicate(text: str, existing_texts: list[str]) -> bool:
+    """이미 같은 카테고리에 들어간 주장과 표현만 다를 뿐 사실상 같은 내용인지 확인한다."""
+    normalized = text.strip().lower()
+    return any(
+        SequenceMatcher(None, normalized, other.strip().lower()).ratio()
+        >= _DUPLICATE_CLAIM_SIMILARITY_THRESHOLD
+        for other in existing_texts
+    )
+
+
 def run_technical_research(
     tech_names: list[str],
     model: str | None = None,
@@ -96,7 +110,9 @@ def run_technical_research(
         findings = TechFindings(tech_name=tech_name)
         for question in questions:
             chunks = retrieve_papers(question.query_ko, tech_name, k=5, query_en=question.query_en)
-            chunk_dicts = _chunks_to_dicts(chunks)
+            chunk_dicts = [
+                c for c in _chunks_to_dicts(chunks) if c["section"].strip().lower() not in _EXCLUDED_SECTIONS
+            ]
             chunk_by_id = {c["evidence_id"]: c for c in chunk_dicts}
 
             if not chunk_dicts:
@@ -144,9 +160,10 @@ def run_technical_research(
                     experimental_condition=claim.experimental_condition,
                 )
                 result.evidence[evidence.evidence_id] = evidence
-                category_findings.claims.append(claim.claim)
                 if claim.evidence_id not in category_findings.evidence_ids:
                     category_findings.evidence_ids.append(claim.evidence_id)
+                if not _is_near_duplicate(claim.claim, category_findings.claims):
+                    category_findings.claims.append(claim.claim)
 
         result.technical_findings[tech_name] = findings
 

@@ -73,6 +73,67 @@ def test_invalid_evidence_id_is_dropped_after_retry(monkeypatch):
     assert any(e["reason"] == "invalid_evidence_id_after_retry" for e in result.errors)
 
 
+def test_acknowledgments_chunks_are_never_sent_to_llm(monkeypatch):
+    from skala_rag.tools.retrieve.retriever import RetrievedChunk
+
+    seen_chunks = []
+
+    def fake_retrieve_papers(query, tech_name, k=5, query_en=None):
+        return [
+            RetrievedChunk(
+                evidence_id="KIVI-fake-ack",
+                source_id="KIVI",
+                tech_name="KIVI",
+                page=9,
+                section="Acknowledgments",
+                text="저자들은 연구비 지원에 감사드립니다.",
+            )
+        ]
+
+    def fake_extract(llm, tech_name, question, chunks):
+        seen_chunks.extend(chunks)
+        return []
+
+    monkeypatch.setattr(agent_module, "retrieve_papers", fake_retrieve_papers)
+    monkeypatch.setattr(agent_module, "_extract_claims_for_question", fake_extract)
+
+    result = run_technical_research(["KIVI"])
+
+    assert seen_chunks == []  # Acknowledgments 청크는 LLM에 전달되기 전에 걸러져야 한다
+    assert all(e["reason"] == "no_evidence_found" for e in result.errors)
+
+
+def test_near_duplicate_claims_are_collapsed(monkeypatch):
+    def fake_extract(llm, tech_name, question, chunks):
+        if not chunks:
+            return []
+        chunk = chunks[0]
+        return [
+            _ExtractedClaim(
+                claim="InfiniGen achieves up to a 3.00x speedup over existing methods.",
+                evidence_id=chunk["evidence_id"],
+            ),
+            _ExtractedClaim(
+                claim="InfiniGen achieves up to 3.00x speedup over the existing methods!",
+                evidence_id=chunk["evidence_id"],
+            ),
+        ]
+
+    monkeypatch.setattr(agent_module, "_extract_claims_for_question", fake_extract)
+
+    result = run_technical_research(["InfiniGen"])
+
+    findings = result.technical_findings["InfiniGen"]
+    # 카테고리마다 질문 2개가 거의 같은 문장을 하나씩 내놓아도, 그 카테고리 안에서는 1개로 합쳐져야 한다.
+    for category in (
+        findings.principle,
+        findings.experimental_setup,
+        findings.performance,
+        findings.limitations,
+    ):
+        assert len(category.claims) == 1, category.claims
+
+
 def test_technical_research_node_updates_state(monkeypatch):
     def fake_extract(llm, tech_name, question, chunks):
         if not chunks:
