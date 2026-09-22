@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KV cache 다관점 평가 보고서</title>
+  <style>
+    body { max-width: 820px; margin: 40px auto; padding: 0 24px; color: #182333; background: #fff; font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
+    h1 { border-bottom: 1px solid #ccd4dd; padding-bottom: 8px; margin-top: 42px; font-size: 1.45rem; }
+    p { overflow-wrap: anywhere; }
+    @media print { body { max-width: none; margin: 0; } h1 { break-after: avoid; } p { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+{% for section in sections %}
+  <section>
+    <h1>{{ section.heading }}</h1>
+    {% for paragraph in section.paragraphs %}<p>{{ paragraph | urlize(target="_blank", rel="noopener noreferrer") }}</p>{% endfor %}
+  </section>
+{% endfor %}
+</body>
+</html>

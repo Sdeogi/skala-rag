@@ -12,3 +12,6 @@ venv/
 # OS / Editor 
 .DS_Store
 .vscode/
+
+# Generated reports
+outputs/
