@@ -52,6 +52,112 @@ def search_web(
     return response.get("results", [])
 
 
+def _search_cache_file(
+    query: str,
+    max_results: int,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> Path:
+    """검색 조건을 안정적인 캐시 파일명으로 변환한다."""
+
+    cache_key = sha256(
+        f"{query}|{max_results}".encode("utf-8")
+    ).hexdigest()
+
+    return cache_dir / f"search_{cache_key}.json"
+
+
+def save_search_cache(
+    query: str,
+    results: list[dict[str, Any]],
+    max_results: int,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> list[dict[str, Any]]:
+    """웹 검색 결과를 JSON 캐시에 저장한다."""
+
+    cache_path = _search_cache_file(
+        query,
+        max_results,
+        cache_dir,
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "query": query,
+        "max_results": max_results,
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "results": results,
+    }
+
+    cache_path.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    return results
+
+
+def load_search_cache(
+    query: str,
+    max_results: int,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> list[dict[str, Any]]:
+    """저장된 웹 검색 결과를 읽는다."""
+
+    cache_path = _search_cache_file(
+        query,
+        max_results,
+        cache_dir,
+    )
+
+    if not cache_path.exists():
+        raise FileNotFoundError(
+            f"저장된 웹 검색 캐시가 없습니다: {query}"
+        )
+
+    payload = json.loads(
+        cache_path.read_text(encoding="utf-8")
+    )
+
+    return payload["results"]
+
+
+def get_search_results(
+    query: str,
+    max_results: int = 3,
+    mode: Literal["live", "replay"] = "live",
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+) -> list[dict[str, Any]]:
+    """live에서는 검색 후 저장하고, replay에서는 캐시를 읽는다."""
+
+    if mode == "live":
+        results = search_web(
+            query,
+            max_results=max_results,
+        )
+
+        return save_search_cache(
+            query,
+            results,
+            max_results,
+            cache_dir,
+        )
+
+    if mode == "replay":
+        return load_search_cache(
+            query,
+            max_results,
+            cache_dir,
+        )
+
+    raise ValueError(
+        f"지원하지 않는 mode입니다: {mode}"
+    )
+
+
 def fetch_source(url: str) -> dict[str, Any]:
     """URL의 실제 원문을 가져온다."""
 
