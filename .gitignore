@@ -12,3 +12,7 @@ venv/
 # OS / Editor 
 .DS_Store
 .vscode/
+
+# Generated web cache
+data/web/*
+!data/web/.gitkeep
