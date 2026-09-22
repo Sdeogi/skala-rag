@@ -1,6 +1,6 @@
 from conftest import FakeModel
 
-from skala_rag.agents.llm_output import LLMReportAgent, LLMSynthesisAgent, numbers_in
+from skala_rag.agents.llm_output import LLMReportAgent, LLMSynthesisAgent, numbers_in, trim_to_sentences
 
 
 def sample_state():
@@ -63,3 +63,15 @@ def test_number_guard_treats_korean_suffixes_consistently():
     state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
     summary = "KIVI는 2 비트 양자화를 적용한다 [e1]."
     assert LLMReportAgent(FakeModel({"summary": summary}))(state)["generation_mode"] == "llm_assisted"
+
+
+def test_overlong_summary_is_trimmed_at_a_sentence_boundary():
+    sentence = "KIVI는 2 비트 양자화를 적용한다 [e1]. "
+    long_summary = sentence * 60  # far beyond the half-page limit
+    state = sample_state()
+    state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
+    report = LLMReportAgent(FakeModel({"summary": long_summary}))(state)
+    assert report["generation_mode"] == "llm_assisted" and report.get("summary_trimmed") is True
+    text = report["sections"][0]["paragraphs"][0]
+    assert len(text) <= 1200 and text.endswith("[e1].")
+    assert trim_to_sentences("짧은 문장이다.", 100) == "짧은 문장이다."

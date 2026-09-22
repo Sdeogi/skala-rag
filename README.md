@@ -24,6 +24,7 @@
 - 보고서: SUMMARY(½쪽 이내) → 분석 배경 → 기술 선정 → 기술 개요 → 관점별 평가(표) → 시사점 → 한계점 → 근거 목록 → REFERENCE(실제 활용 자료만, 과제 표기 형식). Markdown/HTML/PDF(한글 글꼴 임베드)
 - live 모드 LLM 출력 가드: 근거 ID·숫자·우열 표현 검증, 실패 시 규칙 기반 문장으로 대체하고 사유 기록
 - 실행 기록 `run_manifest.json`: 도구 호출·토큰·실행 시간·보완 횟수·ID 충돌·오류·생성 방식
+- 통합 계층: A의 논문 근거·기술 조사, B의 웹 근거·시장성·이해관계자 판정, C의 도메인·TRL 판정기를 한 곳(`integration/services.py`)에서 D 계약으로 변환. 보완 루프에서는 부족한 기술·항목만 재판정
 - 확증 편향 방지 전략 : 대칭 조사, 반례 질의, 주장 유형(reported_fact/inference/unverified) 표시, 미확인 라벨, 상충 쌍 형식의 종합 (설계 B.7)
 
 ## Tech Stack
@@ -135,6 +136,7 @@ graph TD;
 │   │   ├── synthesis.py          # 규칙 기반 일치·상충 쌍  [D]
 │   │   ├── llm_output.py         # live 종합·SUMMARY LLM 에이전트와 출력 가드  [D]
 │   │   └── report.py, report_static.py   # 보고서 장 구성, Markdown/HTML/PDF, manifest  [D]
+│   ├── integration/services.py   # A/B/C 모듈을 PipelineServices에 연결하는 어댑터  [D]
 │   ├── graph/
 │   │   ├── schemas.py            # 그래프 경계 계약(RunConfig, Source, Evidence, PerspectiveResult 등)  [D]
 │   │   ├── state.py              # GraphState, ID 병합 reducer, metrics 이벤트  [D]
@@ -149,7 +151,7 @@ graph TD;
 └── outputs/                      # 보고서·출처 목록·실행 기록 (git 제외)
 ```
 
-통합 상태: A/B/C 모듈은 main에 합쳐졌고, D 그래프와의 연결(어댑터)은 진행 중이다. 현재 D 그래프는 `--fixture` 또는 `--services module:factory`로 실행한다.
+통합: `src/skala_rag/integration/services.py`의 `create_services()`가 A/B/C 모듈을 D 그래프의 `PipelineServices`에 연결한다. `app.py`는 이 factory를 기본으로 쓰며, `--fixture`는 합성 자료로 흐름만 검증한다.
 
 ## Usage
 
@@ -161,17 +163,18 @@ python app.py --mode replay --fixture --output-dir outputs/demo   # 합성 자�
 python -m pytest -q
 ```
 
-팀 서비스 연결 후 실제 실행:
+실제 실행(A/B/C 통합 서비스, 기본 factory):
 
 ```bash
-python app.py --mode replay --services integration.services:create_services --output-dir outputs/replay
-python app.py --mode live --services integration.services:create_services --paper-dir data/papers \
-  --output-dir outputs/live --report-name RAG-Output_판교_10반_이름1+이름2+이름3+이름4
+python app.py --mode live --output-dir outputs/live --report-name RAG-Output_판교_10반_이름1+이름2+이름3+이름4
+python app.py --mode replay --output-dir outputs/replay      # data/web 캐시 재생, 웹 호출 없음
 ```
 
-주요 옵션: `--technologies SW HW`, `--domain`, `--as-of YYYY-MM-DD`, `--web-search-max 20 --fetch-max 30 --tool-timeout 20 --tool-retries 2`, `--max-paper-pages 200`, `--semantic-review auto|on|off`, `--max-review-calls 72`, `--deterministic-output`, `--report-name`, `--draw-graph [PATH]`.
+`live`는 `OPENAI_API_KEY`와 `TAVILY_API_KEY`가 필요하다. `replay`는 웹 검색·원문을 `data/web/` 캐시에서 읽지만 판정 LLM(기술 조사, 도메인, TRL, 검토)은 호출하므로 `OPENAI_API_KEY`가 필요하다. 캐시가 없는 웹 항목은 미확인으로 남는다. FAISS 색인(`indexes/`)이 없으면 `prepare`가 자동으로 만든다.
 
-`--fixture` 출력은 합성 자료이며 실제 KIVI/InfiniGen 평가 결과가 아니다. `live`는 검토 LLM과 종합·SUMMARY LLM을 켜고, `replay`는 규칙 기반으로 재현 가능한 출력을 만든다. 검증 환경: Python 3.14.6, macOS.
+주요 옵션: `--technologies SW HW`, `--domain`, `--as-of YYYY-MM-DD`, `--web-search-max 20 --fetch-max 30 --tool-timeout 20 --tool-retries 2`, `--max-paper-pages 200`, `--semantic-review auto|on|off`, `--max-review-calls 72`, `--llm-output auto|on|off`, `--deterministic-output`, `--report-name`, `--draw-graph [PATH]`.
+
+`--fixture` 출력은 합성 자료이며 실제 KIVI/InfiniGen 평가 결과가 아니다. `live`는 검토 LLM과 종합·SUMMARY LLM을 켜고, `replay`는 규칙 기반으로 재현 가능한 출력을 만든다(`--llm-output on`으로 replay에서도 LLM 작성 가능). 검증 환경: Python 3.14.6, macOS.
 
 ## Contributors
 

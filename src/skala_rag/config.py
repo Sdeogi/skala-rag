@@ -29,10 +29,22 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     )
 
 
-def missing_settings(settings: Settings, mode: str, *, semantic_review: bool = False, llm_output: bool = False) -> list[str]:
-    """Names of required settings that are absent for the requested run."""
+def missing_settings(
+    settings: Settings,
+    mode: str,
+    *,
+    semantic_review: bool = False,
+    llm_output: bool = False,
+    services_need_llm: bool = False,
+) -> list[str]:
+    """Names of required settings that are absent for the requested run.
+
+    The real A/B/C services call the judgment LLM even in replay mode (only web
+    search and page fetches are replayed from cache), so ``services_need_llm``
+    is True for every non-fixture run.
+    """
     missing: list[str] = []
-    needs_openai = mode == "live" or semantic_review or llm_output
+    needs_openai = mode == "live" or semantic_review or llm_output or services_need_llm
     if needs_openai and not settings.openai_api_key:
         missing.append("OPENAI_API_KEY")
     if mode == "live" and not settings.tavily_api_key:

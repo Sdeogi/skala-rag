@@ -146,10 +146,13 @@ def limitation_lines(state: GraphState) -> list[str]:
     lines = []
     for question in state.get("missing_questions", []) or []:
         reasons = ", ".join(question.get("reasons", [])) if question.get("reasons") else "근거 미확인"
-        lines.append(
+        line = (
             f"{question['technology']} {PERSPECTIVE_TITLES.get(question['perspective'], question['perspective'])} 관점 "
             f"'{FIELD_TITLES.get(question['field'], question['field'])}': 근거 미확인 ({reasons})"
         )
+        if question.get("review_reason"):
+            line += f" — 검토 LLM: {_clip(question['review_reason'], 200)}"
+        lines.append(line)
     return lines
 
 

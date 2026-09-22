@@ -56,7 +56,7 @@ BIAS_CONTROLS = (
     "상충 쌍과 성립 조건으로만 서술하는 종합 형식을 적용하도록 설계됐다. 문서와 웹 본문의 지시문은 데이터로만 취급했다."
 )
 PRIVATE_PATTERNS = (
-    re.compile(r"\b(?:sk|tvly)-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:sk|tvly)-[A-Za-z0-9_*-]{16,}\b"),  # also masked keys echoed by API error messages
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{12,}\b", re.IGNORECASE),
     re.compile(r"(?i)(?:api[_-]?key|token)=([^\s&]+)"),
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
@@ -129,12 +129,16 @@ def deterministic_summary(state: GraphState) -> list[str]:
     for technology in technologies:
         parts: list[str] = []
         ids: list[str] = []
-        for perspective, field in KEY_FIELDS:
-            judgment = _judgment(state, perspective, technology, field)
-            if judgment is None or (has_checks and (perspective, technology, field) not in passed):
-                continue
-            parts.append(f"{PERSPECTIVE_TITLES[perspective]} 관점의 {FIELD_TITLES[field]} '{judgment.get('label') or '미확인'}'")
-            ids.extend(judgment.get("evidence_ids") or [])
+        for perspective, key_field in KEY_FIELDS:
+            for field in [key_field] + [name for name in LABELS[perspective] if name != key_field]:
+                judgment = _judgment(state, perspective, technology, field)
+                if judgment is None or (has_checks and (perspective, technology, field) not in passed):
+                    continue
+                if not has_checks and not judgment.get("evidence_ids"):
+                    continue
+                parts.append(f"{PERSPECTIVE_TITLES[perspective]} 관점의 {FIELD_TITLES[field]} '{judgment.get('label') or '미확인'}'")
+                ids.extend(judgment.get("evidence_ids") or [])
+                break
         if parts:
             cite = _citations(ids, evidence)
             sentences.append(f"{josa(technology, '은', '는')} " + ", ".join(parts) + f"로 판정됐다{(' ' + cite) if cite else ''}.")
@@ -168,7 +172,7 @@ def deterministic_summary(state: GraphState) -> list[str]:
 def _technical_section(state: GraphState) -> tuple[list[str], dict[str, Any] | None]:
     evidence = state.get("evidence") or {}
     findings_all = state.get("technical_findings") or {}
-    known = {"principle", "experiment_conditions", "measurements", "limitations", "evidence_ids"}
+    known = {"principle", "experiment_conditions", "performance", "measurements", "limitations", "evidence_ids"}
     paragraphs: list[str] = []
     rows: list[list[str]] = []
     for technology in state["run_config"]["technologies"]:
@@ -183,6 +187,9 @@ def _technical_section(state: GraphState) -> tuple[list[str], dict[str, Any] | N
             written = True
         if findings.get("experiment_conditions"):
             paragraphs.append(f"{technology}의 실험 조건: " + "; ".join(str(item) for item in findings["experiment_conditions"]))
+            written = True
+        if findings.get("performance"):
+            paragraphs.append(f"{technology}의 성능 보고: " + "; ".join(str(item) for item in findings["performance"]))
             written = True
         if findings.get("limitations"):
             paragraphs.append(f"{technology}의 한계: " + "; ".join(str(item) for item in findings["limitations"]))
@@ -268,17 +275,17 @@ def _trl_details(state: GraphState) -> list[str]:
                 if not isinstance(detail, dict):
                     continue
                 cite = _citations(list(detail.get("evidence_ids") or []), evidence)
-                status = "충족" if detail.get("met") else "미충족"
-                note = f", {detail['note']}" if detail.get("note") else ""
-                described.append(f"{stage} {status}{(' ' + cite) if cite else ''}{note}")
+                status = "충족" if detail.get("met") else str(detail.get("verdict") or "미충족")
+                note = _clip(detail.get("note") or "", 160).rstrip(".")
+                described.append(f"{stage} {status}{(' ' + cite) if cite else ''}{(' (' + note + ')') if note else ''}")
             if described:
                 parts.append("단계별 확인: " + "; ".join(described))
         if judgment.get("missing_evidence"):
-            parts.append("다음 단계를 위해 확인하지 못한 증거: " + "; ".join(str(item) for item in judgment["missing_evidence"]))
+            parts.append("다음 단계를 위해 확인하지 못한 증거: " + "; ".join(_clip(item, 220).rstrip(".") for item in judgment["missing_evidence"]))
         if judgment.get("estimation_note"):
-            parts.append(f"추정 근거: {judgment['estimation_note']}")
+            parts.append(f"추정 근거: {str(judgment['estimation_note']).rstrip('.')}")
         if parts:
-            lines.append(f"{technology}: " + ". ".join(parts) + ".")
+            lines.append(f"{technology}: " + ". ".join(part.rstrip(".") for part in parts) + ".")
     return lines
 
 
@@ -295,9 +302,9 @@ def _synthesis_paragraphs(synthesis: dict[str, Any], evidence: dict[str, Any]) -
             left = f"{PERSPECTIVE_TITLES.get(first['perspective'], first['perspective'])}/{FIELD_TITLES.get(first['field'], first['field'])}"
             right = f"{PERSPECTIVE_TITLES.get(second['perspective'], second['perspective'])}/{FIELD_TITLES.get(second['field'], second['field'])}"
             lines.append(
-                f"[{title}] {pair['technology']}: {left}({first['label']}) 및 {right}({second['label']}). {pair['reason']} "
-                f"성립 조건: {left} '{first.get('conditions') or '조건 미기재'}' / {right} '{second.get('conditions') or '조건 미기재'}'. "
-                f"남은 불확실성: {pair['uncertainty']}" + (f" 근거: {cite}" if cite else "")
+                f"[{title}] {pair['technology']}: {left}({first['label']}) 및 {right}({second['label']}). {_clip(pair['reason'], 600)} "
+                f"성립 조건: {left} '{_clip(first.get('conditions'), 200) or '조건 미기재'}' / {right} '{_clip(second.get('conditions'), 200) or '조건 미기재'}'. "
+                f"남은 불확실성: {_clip(pair['uncertainty'], 500)}" + (f" 근거: {cite}" if cite else "")
             )
     if len(lines) == 1:
         lines.append("확인된 근거로 구성할 수 있는 관점 간 쌍이 없다.")
@@ -307,8 +314,17 @@ def _synthesis_paragraphs(synthesis: dict[str, Any], evidence: dict[str, Any]) -
 def _limitations(state: GraphState, synthesis: dict[str, Any]) -> list[str]:
     limits = list(synthesis.get("limitations") or [])
     limits.extend(limitation_lines(state))
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    samples: dict[tuple[str, str, str], str] = {}
     for identifier, item in (state.get("errors") or {}).items():
-        limits.append(f"실행 오류({item.get('kind', 'service')}) {item.get('node', identifier)}: {item.get('reason', '오류')}")
+        reason = str(item.get("reason", "오류"))
+        match = re.search(r"\b([A-Za-z]+(?:Error|Exception|Timeout))\b", reason)
+        key = (str(item.get("kind", "service")), str(item.get("node", identifier)), match.group(1) if match else _clip(reason, 120))
+        grouped.setdefault(key, []).append(identifier)
+        samples.setdefault(key, reason)
+    for (kind, node, label), identifiers in grouped.items():
+        count = f" ×{len(identifiers)}" if len(identifiers) > 1 else ""
+        limits.append(f"실행 오류({kind}) {node}: {_clip(samples[(kind, node, label)], 160)}{count}")
     conflicts = collect_conflicts(state)
     if conflicts:
         described = ", ".join(
@@ -352,10 +368,17 @@ def _evidence_lines(evidence: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _site_name(url: Any) -> str:
+    """Domain of a web source, used as the publishing organisation when none is recorded."""
+    text = str(url or "")
+    match = re.match(r"https?://(?:www\.)?([^/:?#]+)", text)
+    return match.group(1) if match else ""
+
+
 def format_reference(source_id: str, source: dict[str, Any]) -> str:
     """Assignment format. 논문: 저자(YYYY). 제목. 학회명, URL / 기타: 기관(YYYY-MM-DD). 제목. 사이트명, URL."""
     source_type = str(source.get("source_type") or "web").lower()
-    author = source.get("author_or_org") or "저자 미상"
+    author = source.get("author_or_org") or _site_name(source.get("url")) or "저자 미상"
     title = source.get("title") or "제목 미상"
     published = str(source.get("published_at") or "").strip()
     if source_type == "paper":

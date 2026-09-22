@@ -1,7 +1,8 @@
 """Command-line entry point for the graph/output branch (design E.2).
 
-    python app.py --mode replay --fixture --output-dir outputs/demo
-    python app.py --mode live --services integration.services:create_services
+    python app.py --mode replay --fixture --output-dir outputs/demo   # 합성 자료로 흐름 검증
+    python app.py --mode live --output-dir outputs/live                # A/B/C 통합 서비스(기본 factory)
+    python app.py --mode replay --output-dir outputs/replay             # data/web 캐시 재생 (LLM 판정은 호출)
     python app.py --draw-graph docs/graph.mmd
 """
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -20,11 +22,15 @@ except ImportError:  # python-dotenv is declared; keep the CLI usable in minimal
 
 # The repository uses a src layout; make `python app.py` work before the package is installed.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-load_dotenv()
+if os.environ.get("RAG_DISABLE_DOTENV") != "1":  # tests set this so a local .env cannot leak into them
+    load_dotenv()
 
 from skala_rag.agents.report import save_outputs  # noqa: E402
 from skala_rag.config import load_settings, missing_settings  # noqa: E402
 from skala_rag.graph.workflow import PipelineServices, build_graph, draw_mermaid, initial_state  # noqa: E402
+
+
+DEFAULT_SERVICES = "skala_rag.integration.services:create_services"
 
 
 def _load_services(spec: str) -> PipelineServices:
@@ -41,7 +47,7 @@ def _load_services(spec: str) -> PipelineServices:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="KV cache 다관점 RAG 그래프 실행")
     parser.add_argument("--mode", choices=("live", "replay"), help="live: 외부 검색과 LLM 사용, replay: 저장된 자료 재생")
-    parser.add_argument("--services", help="통합 서비스 factory: module.path:factory")
+    parser.add_argument("--services", default=None, help=f"서비스 factory module.path:factory (기본: {DEFAULT_SERVICES})")
     parser.add_argument("--fixture", action="store_true", help="합성 자료로 그래프만 검증; 실제 평가에 사용 금지")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--report-name", default="report", help="보고서 파일 이름(확장자 제외). 예: RAG-Output_판교_10반_이름")
@@ -56,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tool-retries", type=int, default=2, help="도구 재시도 횟수")
     parser.add_argument("--max-paper-pages", type=int, default=200, help="RAG 문서 총 페이지 상한")
     parser.add_argument("--deterministic-output", action="store_true", help="live에서도 규칙 기반 종합과 SUMMARY 사용")
+    parser.add_argument("--llm-output", choices=("auto", "on", "off"), default="auto", help="종합·SUMMARY LLM (auto: live에서만, on: replay에서도 캐시 재생 후 LLM 작성)")
     parser.add_argument("--semantic-review", choices=("auto", "on", "off"), default="auto", help="근거 의미 검토 LLM (auto: live에서만)")
     parser.add_argument("--max-review-calls", type=int, default=72, help="검토 LLM 호출 상한")
     parser.add_argument("--recursion-limit", type=int, default=50, help="그래프 최대 단계 수")
@@ -80,15 +87,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--fixture and --services cannot be combined")
     if args.fixture and args.mode != "replay":
         parser.error("--fixture is only available in replay mode")
-    if not args.fixture and not args.services:
-        parser.error("--services is required until the A/B/C integration adapters are merged")
+    services_spec = args.services or DEFAULT_SERVICES
     if args.paper_dir and not args.paper_dir.is_dir():
         parser.error(f"paper directory does not exist: {args.paper_dir}")
     settings = load_settings()
     model_id = args.model_id or settings.model_id
     review_enabled = args.semantic_review == "on" or (args.semantic_review == "auto" and args.mode == "live")
-    llm_output = args.mode == "live" and not args.deterministic_output
-    absent = missing_settings(settings, args.mode, semantic_review=review_enabled, llm_output=llm_output)
+    if args.deterministic_output or args.llm_output == "off":
+        llm_output = False
+    else:
+        llm_output = args.llm_output == "on" or args.mode == "live"
+    absent = missing_settings(settings, args.mode, semantic_review=review_enabled, llm_output=llm_output, services_need_llm=not args.fixture)
     if absent:
         parser.error("missing configuration: " + ", ".join(absent))
 
@@ -116,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
             services = create_services()
         else:
-            services = _load_services(args.services)
+            services = _load_services(services_spec)
         if llm_output:
             from langchain_openai import ChatOpenAI
 

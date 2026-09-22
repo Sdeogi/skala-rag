@@ -32,6 +32,18 @@ CITATION_PATTERN = re.compile(r"\[([^\]]+)\]")
 PAIR_TEXT_LIMIT = 600
 
 
+def trim_to_sentences(text: str, limit: int) -> str:
+    """Cut at the last sentence end (Korean/Latin period) before ``limit``; keep citations intact."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = max(head.rfind(". "), head.rfind(".\n"), head.rfind("다."), head.rfind("] "))
+    if cut <= 0:
+        return head.rstrip()
+    end = cut + (2 if head[cut] == "다" else 1)
+    return head[:end].rstrip()
+
+
 def numbers_in(text: str) -> set[str]:
     return set(NUMBER_PATTERN.findall(text or ""))
 
@@ -205,6 +217,9 @@ class LLMReportAgent:
         try:
             output, usage = invoke_structured(self.model, SummaryDraft, messages)
             summary = _redact(output.summary.strip())
+            trimmed = False
+            if len(summary) > SUMMARY_LIMIT:
+                summary, trimmed = trim_to_sentences(summary, SUMMARY_LIMIT), True
             cited = citations_in(summary)
             if not summary or len(summary) > SUMMARY_LIMIT:
                 raise ValueError("summary is empty or exceeds the half-page limit")
@@ -222,7 +237,9 @@ class LLMReportAgent:
             report["sections"][0]["paragraphs"] = [summary]
             report["markdown"] = render_markdown(report["sections"])
             report["generation_mode"] = "llm_assisted"
-            report["metrics"] = [metric_event("report", llm_calls=1, tokens=usage)]
+            if trimmed:
+                report["summary_trimmed"] = True
+            report["metrics"] = [metric_event("report", llm_calls=1, tokens=usage, summary_trimmed=int(trimmed))]
         except Exception as exc:
             report["generation_mode"] = "deterministic_fallback"
             report["fallback_reason"] = f"{type(exc).__name__}: {exc}"

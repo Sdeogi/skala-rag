@@ -76,3 +76,41 @@ def test_reviewer_metrics_are_drained_into_the_update():
     result = check_evidence(state, Reviewer())
     assert result["metrics"] == [{"node": "evidence_check", "llm_calls": 1}]
     assert result["evidence_check"]["semantic_review_calls"] == 0
+
+
+def test_review_reason_is_recorded_for_unsupported_items():
+    state = _state()
+    state["market_analysis"] = perspective("market")
+
+    class Reviewer:
+        calls = 0
+        last_reason = ""
+
+        def __call__(self, perspective_name, technology, field, judgment, evidence):
+            self.last_reason = "근거가 라벨의 의미와 무관"
+            return field != "adoption"
+
+    result = check_evidence(state, Reviewer())
+    item = _item(result, "market", "KIVI", "adoption")
+    assert item["reasons"] == ["unsupported_claim"] and item["review_reason"] == "근거가 라벨의 의미와 무관"
+    question = next(q for q in result["missing_questions"] if q["field"] == "adoption" and q["technology"] == "KIVI")
+    assert question["review_reason"] == "근거가 라벨의 의미와 무관"
+
+
+def test_not_found_labels_skip_evidence_and_review_but_stay_open():
+    state = _state()
+    state["domain_analysis"] = perspective("domain")
+    state["domain_analysis"]["technologies"]["KIVI"]["latency"]["label"] = "보고 없음"
+    state["market_analysis"] = perspective("market")
+    state["market_analysis"]["technologies"]["KIVI"]["adoption"].update(label="미확인", evidence_ids=[])
+    reviewed = []
+
+    def reviewer(perspective_name, technology, field, judgment, evidence):
+        reviewed.append((perspective_name, technology, field))
+        return True
+
+    result = check_evidence(state, reviewer)
+    assert _item(result, "domain", "KIVI", "latency")["reasons"] == ["not_found_label"]
+    assert _item(result, "market", "KIVI", "adoption")["reasons"] == ["not_found_label"]
+    assert ("domain", "KIVI", "latency") not in reviewed and ("market", "KIVI", "adoption") not in reviewed
+    assert any(q["field"] == "latency" and q["reasons"] == ["not_found_label"] for q in result["missing_questions"])
