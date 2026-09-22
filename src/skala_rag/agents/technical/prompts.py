@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .schemas import Category
+
 
 @dataclass(frozen=True)
 class CommonQuestion:
-    category: str  # schemas.Category 값 중 하나
+    category: Category
     query_ko: str
     query_en: str
 
