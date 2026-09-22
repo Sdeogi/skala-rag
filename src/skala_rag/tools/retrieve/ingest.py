@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pymupdf
 from langchain_community.vectorstores import FAISS
 
 from .chunking import CHUNK_OVERLAP_TOKENS, CHUNK_SIZE_TOKENS, chunk_pages
@@ -14,6 +15,8 @@ from .parsing import extract_pdf_pages
 
 DEFAULT_PAPERS_DIR = "data/papers"
 DEFAULT_INDEX_DIR = "indexes"
+# 설계서 D.1/D.4: RAG 대상 문서는 총 200페이지로 한정하고, 초과하면 색인을 만들지 않고 종료한다.
+MAX_TOTAL_PAGES = 200
 
 
 def _load_manifest(papers_dir: Path) -> list[dict]:
@@ -32,11 +35,22 @@ def build_index(papers_dir: str = DEFAULT_PAPERS_DIR, index_dir: str = DEFAULT_I
     index_dir_path.mkdir(parents=True, exist_ok=True)
 
     papers = _load_manifest(papers_dir_path)
+
+    total_pages = sum(paper["page_count"] for paper in papers)
+    if total_pages > MAX_TOTAL_PAGES:
+        raise ValueError(
+            f"RAG 대상 문서 총 페이지 수({total_pages})가 설계서 한도({MAX_TOTAL_PAGES})를 "
+            "초과했습니다. data/papers/manifest.json 구성을 확인하세요."
+        )
+
     all_documents = []
     for paper in papers:
         pdf_path = papers_dir_path / paper["filename"]
-        source_id = paper["tech_name"]
-        page_blocks = extract_pdf_pages(str(pdf_path), tech_name=paper["tech_name"])
+        source_id = paper["source_id"]
+        try:
+            page_blocks = extract_pdf_pages(str(pdf_path), tech_name=paper["tech_name"])
+        except pymupdf.FileDataError as exc:
+            raise RuntimeError(f"{pdf_path} PDF가 손상되어 열 수 없습니다: {exc}") from exc
         documents = chunk_pages(page_blocks, tech_name=paper["tech_name"], source_id=source_id)
         if not documents:
             raise ValueError(f"{pdf_path} 에서 추출된 청크가 없습니다.")

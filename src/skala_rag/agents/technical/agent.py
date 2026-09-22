@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from skala_rag.tools.retrieve import retrieve_papers
 
-from .prompts import COMMON_QUESTIONS, EXTRACTION_SYSTEM_PROMPT, build_user_prompt
+from .prompts import COMMON_QUESTIONS, CommonQuestion, EXTRACTION_SYSTEM_PROMPT, build_user_prompt
 from .schemas import CategoryFindings, ClaimType, Evidence, TechFindings, TechnicalResearchResult
 
 MODEL_ENV_VAR = "TECHNICAL_AGENT_MODEL"
@@ -27,6 +27,7 @@ class _ExtractedClaim(BaseModel):
     claim: str
     evidence_id: str
     claim_type: ClaimType = "reported_fact"
+    experimental_condition: str | None = None
 
 
 class _ExtractionResponse(BaseModel):
@@ -81,14 +82,19 @@ def _validate_claims(
 
 
 def run_technical_research(
-    tech_names: list[str], model: str | None = None
+    tech_names: list[str],
+    model: str | None = None,
+    questions: list[CommonQuestion] | None = None,
 ) -> TechnicalResearchResult:
+    """기술명과 공통 질문 목록을 입력으로 받는다(설계서 B.2). `questions`를 생략하면
+    `prompts.COMMON_QUESTIONS` 기본값을 쓴다."""
     llm = _build_llm(model)
     result = TechnicalResearchResult()
+    questions = questions or COMMON_QUESTIONS
 
     for tech_name in tech_names:
         findings = TechFindings(tech_name=tech_name)
-        for question in COMMON_QUESTIONS:
+        for question in questions:
             chunks = retrieve_papers(question.query_ko, tech_name, k=5, query_en=question.query_en)
             chunk_dicts = _chunks_to_dicts(chunks)
             chunk_by_id = {c["evidence_id"]: c for c in chunk_dicts}
@@ -135,6 +141,7 @@ def run_technical_research(
                     claim=claim.claim,
                     quote=chunk["text"],
                     claim_type=claim.claim_type,
+                    experimental_condition=claim.experimental_condition,
                 )
                 result.evidence[evidence.evidence_id] = evidence
                 category_findings.claims.append(claim.claim)

@@ -18,7 +18,11 @@ Category = Literal["principle", "experimental_setup", "performance", "limitation
 
 
 class Evidence(BaseModel):
-    """근거 하나. evidence_id를 키로 공유 evidence 풀에 저장된다(설계서 D.1)."""
+    """근거 하나. evidence_id를 키로 공유 evidence 풀에 저장된다.
+
+    설계서 D.1: "Evidence는 출처에서 뽑은 근거 하나이며 evidence_id, source_id, 기술명,
+    주장, 인용 구절, 페이지 또는 절, 주장 유형, 실험 조건을 갖는다." 8개 필드 그대로 반영.
+    """
 
     evidence_id: str
     source_id: str
@@ -28,6 +32,9 @@ class Evidence(BaseModel):
     claim: str
     quote: str
     claim_type: ClaimType = "reported_fact"
+    experimental_condition: str | None = None
+    """모델/GPU/배치 크기/문맥 길이 등, 주장이 성립하는 실험 조건(발췌문에 명시된 경우만).
+    성능·한계 관련 주장에는 채워지고, 원리 설명처럼 조건이 없는 주장은 null로 둔다."""
 
 
 class CategoryFindings(BaseModel):
