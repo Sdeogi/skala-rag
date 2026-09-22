@@ -7,10 +7,10 @@ resolution-markers = [
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
@@ -1084,7 +1084,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.7.16"
+version = "0.7.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain" },
@@ -1095,9 +1095,9 @@ dependencies = [
     { name = "packaging" },
     { name = "wcmatch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a1/fd/64fcca7a8e06cdc068abd76ae0dc31c1f5be1afa2de4b33f91fb39a1410a/deepagents-0.7.16.tar.gz", hash = "sha256:ea4aa49dbe424d427dc6aa660150f15f5fafe68a679fa8e1fdda55b2e93472a8", size = 301535, upload-time = "2026-09-21T13:29:56.998Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/df/fd417dffd758c314d6f1226c01fa808ce6cf709fe39cbc742ad4fb820f3e/deepagents-0.7.17.tar.gz", hash = "sha256:de19e9f1a29e862d2efa2242c9246c13ed24eb44ade24ed3f17376e31127423f", size = 302253, upload-time = "2026-09-22T04:47:37.712Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/20/f4/38c5efe057abf895158d4232b8a6f93d4841b7a4692a85c8f65e245bc4be/deepagents-0.7.16-py3-none-any.whl", hash = "sha256:384bd824303f6654f7d1ad38190ac25104de05419407d5b26c242365e3fda0ba", size = 328598, upload-time = "2026-09-21T13:29:55.613Z" },
+    { url = "https://files.pythonhosted.org/packages/86/9c/dc9a66311c5d2bf49147512f6d8c644c23e87bc6f833a740afa903dd9b78/deepagents-0.7.17-py3-none-any.whl", hash = "sha256:5ec2e536acf5fee7246f89657b2d20b9534e81a42bb0f8cc1f493cb8af4fab08", size = 329185, upload-time = "2026-09-22T04:47:36.54Z" },
 ]
 
 [[package]]
@@ -4512,11 +4512,11 @@ wheels = [
 
 [[package]]
 name = "platformdirs"
-version = "4.11.11"
+version = "4.11.12"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f8/13/f870dd0b42690138e4e37a76b5138e5690ed4365a77071bb092d59037da0/platformdirs-4.11.11.tar.gz", hash = "sha256:b0befe8a90759e4a9a8b9820d434ae226a6549063210b596da0038a7a05aede4", size = 39949, upload-time = "2026-09-19T01:18:47.259Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/dd/65804b0c2925a1c821a05502ea57517b69a073ff400d25ab9faa3a2cf012/platformdirs-4.11.12.tar.gz", hash = "sha256:e8dc1cb58f1153fd7f61db1374317770baababec2480b37b8f01c6cc25b45267", size = 40016, upload-time = "2026-09-22T01:02:36.973Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/be/3ae887e84c38c4dd1c549cd5825adc93f48069a94fe1cb8ac52a9da16f15/platformdirs-4.11.11-py3-none-any.whl", hash = "sha256:972ea6b2b387155a536226a0750e46923d731d459a387c4a255c583ed2f64547", size = 24992, upload-time = "2026-09-19T01:18:45.825Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/2b/69de6317fbf48865bb12aa56c9cfcfff46b3add0cd45250725d96146dce0/platformdirs-4.11.12-py3-none-any.whl", hash = "sha256:b1ba966ac76153d9985a0787ffab951e7c18416189873d4e4ddb2c8a04a0a254", size = 24976, upload-time = "2026-09-22T01:02:35.742Z" },
 ]
 
 [[package]]
@@ -6177,7 +6177,7 @@ wheels = [
 [[package]]
 name = "skala-10-team6"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
     { name = "faiss-cpu" },
