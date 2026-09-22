@@ -1,8 +1,6 @@
 # Subject
 
-본 프로젝트는 KV cache 최적화 기술을 소프트웨어(KIVI)와 하드웨어(InfiniGen) 두 진영에서 선정하여, 시장성·이해관계자·도메인 적용·기술 성숙도 관점에서 중립적으로 비교 평가하는 LangGraph 기반 Multi-Agent Agentic RAG를 개발하는 프로젝트임.
-
-이 브랜치 `feat/graph-output`은 D 역할(LangGraph State/Node/Edge, 병렬 fan-out/join, 근거 검사·보완 루프, 평가 종합, 보고서 출력, CLI)을 구현한다. 논문 RAG(A, `feat/paper-rag`), 웹 근거(B, `feat/web-evidence`), 관점 평가 에이전트(C, `feat/evaluation`)는 합병 시 `PipelineServices`에 연결한다. 통합 계약은 [docs/GRAPH_OUTPUT_DESIGN.md](docs/GRAPH_OUTPUT_DESIGN.md)에 있다.
+KV Cache의 최적화 기술을 소프트웨어와 하드웨어 진영에서 각각 선정하고 기술/시장/이해관계자/도메인 4개의 관점에서 비교 평가하는 Agentic RAG 프로젝트입니다. 논문과 웹 자료를 근거로 데이터센터/클라우드 LLM 서빙 환경의 적용 조건과 한계를 정리합니다. 이때, 각 기술의 우열을 가리는 것이 아니라 치이점에 대해 설명합니다.
 
 ## Overview
 
