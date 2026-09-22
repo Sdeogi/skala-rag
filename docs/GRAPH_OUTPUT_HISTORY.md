@@ -22,6 +22,7 @@
 4. 최초 LangGraph 컴파일에서 조건부 간선의 노드 목록 매핑이 허용되지 않아 `fan_out` 노드를 명시적으로 추가했다. 수정 후 병렬 합류 테스트가 통과했다.
 5. `app.py`, HTML 템플릿, PDF 저장과 fixture를 구현했다. `python app.py`가 설치 전에도 `src` 패키지를 찾게 했다.
 6. 합성 fixture로 Markdown/HTML/PDF/sources/manifest를 만들고 PDF 첫 장과 마지막 장을 렌더링해 한글과 구조를 확인했다. LLM 출력의 근거 ID·숫자 제한, 민감정보 가림과 TRL 범위 라벨을 추가했다.
+7. 원격 업로드 직후 README의 테스트 명령을 `PYTHONPATH` 없이 재현했을 때 `src` import가 실패했다. pytest 설정에 `pythonpath = ["src"]`를 추가해 문서의 명령을 그대로 실행 가능하게 했다.
 
 ```bash
 cd '/Users/kunwoo/Desktop/workspace/0918_RAG_Pipeline_설계_및_구현/skala-rag'
