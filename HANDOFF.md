@@ -12,11 +12,13 @@
 
 | 항목 | 파일/디렉토리 |
 |---|---|
-| 도메인 평가 에이전트 | `agents/domain.py` |
-| 기술 성숙도(TRL) 평가 에이전트 | `agents/trl.py` |
-| Pydantic 공용 결과 스키마 | `schemas/state.py` |
-| 위 두 에이전트의 Rubric 프롬프트 | `prompts/domain.py`, `prompts/trl.py` |
-| 근거 검사 로직 | `evidence_check.py` (또는 `graph/evidence_check.py`) |
+| 도메인 평가 에이전트 | `src/skala_rag/agents/domain.py` |
+| 기술 성숙도(TRL) 평가 에이전트 | `src/skala_rag/agents/trl.py` |
+| Pydantic 공용 결과 스키마 | `src/skala_rag/schemas/state.py` |
+| 위 두 에이전트의 Rubric 프롬프트 | `src/skala_rag/prompts/domain.py`, `src/skala_rag/prompts/trl.py` |
+| 근거 검사 로직 | `src/skala_rag/evidence_check.py` |
+
+> **배치 규약:** 팀 통일을 위해 `src/skala_rag/` 아래 (B의 `feat/web-evidence` 브랜치와 동일). `pyproject.toml`에 hatchling build-system을 추가해 editable 설치되므로 어디서든 `from skala_rag.X import Y` 가능.
 
 관련 PDF 명세: **B.2 표(에이전트 표)**, **C.2 (TRL)**, **C.5 (도메인)**, **C.7 (점검표)**, **D.1 (State)**, **D.4 (분기와 종료 규칙)**.
 
@@ -29,33 +31,31 @@ C의 산출물이 A/B/D와 어떻게 맞물리는지:
 ### 1.1 A(Paper RAG)에게 의존하는 것
 - **도구 시그니처(가정):**
   ```python
-  # tools/retrieve.py
+  # src/skala_rag/tools/retrieve.py
   @tool("retrieve_papers")
   def retrieve_papers(query: str, tech: Literal["KIVI","InfiniGen"], k: int = 5) -> list[Evidence]:
       """논문에서 근거 청크를 반환. tech로 논문 필터링."""
   ```
-- C의 도메인 에이전트는 이 도구를 호출해 근거를 얻음.
-- **통합 전에는** C의 노트북 내부에 임시 로컬 retriever(PyMuPDF+FAISS+multilingual-e5-small)를 구현. 인터페이스만 맞추면 통합 시 import만 바꾸면 됨.
+- C의 도메인 에이전트가 factory `make_domain_evaluator(retriever=retrieve_papers)`로 주입받아 호출.
 
 ### 1.2 B(Web Evidence)에게 의존하는 것
 - **도구 시그니처(가정):**
   ```python
-  # tools/web.py
+  # src/skala_rag/tools/web.py
   @tool("search_web")
-  def search_web(query: str, purpose: Literal["adoption","integration","limitation","issue","benchmark"] | None = None, max_results: int = 5) -> list[Evidence]:
+  def search_web(query: str, tech: Literal["KIVI","InfiniGen"], purpose: str = "adoption", max_results: int = 5) -> list[Evidence]:
       """Tavily 검색 후 원문 fetch·요약해 Evidence로 반환."""
   ```
-- C의 TRL 에이전트가 이 도구를 호출.
-- **통합 전에는** C의 노트북에서 임시 Tavily 래퍼 구현.
+- C의 TRL 에이전트가 factory `make_trl_evaluator(retriever=..., web_search=search_web)`로 주입받아 호출.
 
 ### 1.3 D(Graph & Output)에게 넘기는 것
-- `agents/domain.py`의 노드 함수: `state -> {"domain_analysis": PerspectiveResult}`
-- `agents/trl.py`의 노드 함수: `state -> {"trl_analysis": PerspectiveResult}`
-- `evidence_check` 노드: `state -> {"evidence_check": CheckResult, "missing_questions": list[Question], "retry_count": int}`
-- 조건 분기(보완 vs 평가 종합)는 D가 담당. C는 `CheckResult.needs_retry` 필드를 참고할 수 있도록 제공.
+- `src/skala_rag/agents/domain.py::make_domain_evaluator(retriever)` → 노드 반환값 `{"domain_analysis": PerspectiveResult, "evidence": {...}}`
+- `src/skala_rag/agents/trl.py::make_trl_evaluator(retriever, web_search)` → 노드 반환값 `{"trl_analysis": PerspectiveResult, "evidence": {...}}`
+- `src/skala_rag/evidence_check.py::evidence_check(state)` → `{"evidence_check": CheckResult, "missing_questions": list[Question], "retry_count": int}`
+- 조건 분기(보완 vs 평가 종합)는 D가 담당. C는 `CheckResult.needs_retry` 필드를 노출.
 
 ### 1.4 모두가 공유하는 것
-- `schemas/state.py` — Pydantic 스키마. **C가 최초 소유자.** A/B/D는 이걸 `from schemas.state import ...` 로 import해서 사용.
+- `src/skala_rag/schemas/state.py` — Pydantic 스키마. **C가 최초 소유자.** A/B/D는 이걸 `from skala_rag.schemas.state import ...` 로 import해서 사용.
 - 스키마 변경 시 C가 이 문서에 diff를 남긴다.
 
 ---
@@ -75,29 +75,35 @@ C의 산출물이 A/B/D와 어떻게 맞물리는지:
 
 ---
 
-## 3. 파일 인벤토리 (진행 중 갱신)
+## 3. 파일 인벤토리
 
 ```
 skala-rag/
-├── HANDOFF.md               # 이 문서 (C 담당)
+├── HANDOFF.md                        # 이 문서 (C 담당)
+├── pyproject.toml                    # hatchling build-system + skala_rag 패키지 등록
 ├── data/
 │   └── papers/
-│       ├── KIVI.pdf         # (원래 루트에 있던 것 이동)
+│       ├── KIVI.pdf
 │       └── InfiniGen.pdf
-├── notebooks/               # (gitignored — 개인 개발용, 커밋 안 됨)
-│   ├── 20-Schemas.ipynb     # 스키마 정의·검증 (셀별)
-│   ├── 21-DomainAgent.ipynb # 도메인 에이전트 개발
-│   ├── 22-TRLAgent.ipynb    # TRL 에이전트 개발
-│   └── 23-EvidenceCheck.ipynb # 근거 검사 노드 개발
-├── schemas/
-│   └── state.py             # [예정] 검증된 스키마 이관 목적지
-├── agents/
-│   ├── domain.py            # [예정]
-│   └── trl.py               # [예정]
-├── prompts/
-│   ├── domain.py            # [예정]
-│   └── trl.py               # [예정]
-└── evidence_check.py        # [예정] (또는 graph/evidence_check.py로 이동 - D와 협의)
+├── notebooks/                        # (gitignored — 개인 개발·검증용)
+│   ├── 20-Schemas.ipynb
+│   ├── 21-DomainAgent.ipynb
+│   ├── 22-TRLAgent.ipynb
+│   └── 23-EvidenceCheck.ipynb
+└── src/skala_rag/                    # editable 설치되는 파이썬 패키지
+    ├── schemas/
+    │   └── state.py                  # 팀 공용 계약 (C)
+    ├── prompts/
+    │   ├── domain.py                 # (C)
+    │   └── trl.py                    # (C)
+    ├── agents/
+    │   ├── domain.py                 # make_domain_evaluator factory (C)
+    │   └── trl.py                    # make_trl_evaluator factory (C)
+    ├── evidence_check.py             # 근거 검사 노드 (C)
+    ├── tools/                        # (A/B 담당 — retrieve.py, web.py)
+    ├── database/                     # (초기 셋업, 미사용)
+    ├── config.py, main.py            # (초기 셋업, 미사용)
+    └── __init__.py
 ```
 
 ---
@@ -140,12 +146,20 @@ skala-rag/
 
 - **Phase 2/3/4 py 파일 임포트 계층 최종:**
   ```
-  schemas/state.py           (0 dep — 팀 공용 계약)
-  prompts/domain.py, trl.py  ← schemas
-  agents/domain.py, trl.py   ← schemas, prompts
-  evidence_check.py          ← schemas
+  skala_rag.schemas.state           (0 dep — 팀 공용 계약)
+  skala_rag.prompts.{domain,trl}    ← schemas
+  skala_rag.agents.{domain,trl}     ← schemas, prompts
+  skala_rag.evidence_check          ← schemas
   ```
-  D의 그래프 조립부만 `agents/*.make_*`와 A/B의 `tools/*`를 wire하면 됨.
+  D의 그래프 조립부만 `skala_rag.agents.*.make_*`와 A/B의 `skala_rag.tools.*`를 wire하면 됨.
+
+- **Phase 5 후 리팩터: `src/skala_rag/` 아래로 이관.**
+  - 최초 커밋(28691a6)은 PDF `E.2` 스펙대로 프로젝트 루트에 `agents/`, `prompts/`, `schemas/`, `evidence_check.py`를 두었으나, B(`feat/web-evidence`)가 초기 프로젝트 구조인 `src/skala_rag/` 아래에 코드를 넣은 것을 확인.
+  - 팀 통합 마찰을 줄이기 위해 C 산출물도 `src/skala_rag/` 아래로 이동.
+  - `pyproject.toml`에 `[build-system]` (hatchling) + `[tool.hatch.build.targets.wheel] packages = ["src/skala_rag"]` 추가 → `uv sync`로 editable 설치 완료.
+  - 모든 내부 import를 `from skala_rag.X import Y` 절대 경로로 갱신.
+  - 노트북(gitignored)들도 로컬 사용을 위해 동일하게 갱신.
+  - Import 스모크 통과.
   - 구성: 환경 → 스키마 import → 논문 로드/청크/FAISS (Phase 2와 동일 임시 파이프라인) → 임시 `retrieve_papers` (A자리) → 임시 `search_web`(Tavily 래퍼, B자리) → TRL 7단계 rubric (`TRLStageSpec`) → 프롬프트 → `judge_stage` (충족/미충족/미확인) → `judge_trl_for_tech` (최고 도달 단계 계산 + missing_evidence_note 수집) → `trl_evaluator` 노드 → 실행 + 검증.
   - **MVP 결정:** tech별 `RubricItem` 1개(`item_key="trl_level"`, `verdict=TRLLevel.value`). 단계별 상세는 `reason`(요약)/`conditions`(missing evidence)로 표현. PDF의 "단계별 충족 여부와 근거 ID" 명시적 데이터 표현은 후속 이터레이션(단계별 RubricItem 7×2=14 확장) 필요 시 추가.
   - 단계별 근거 방식(PDF C.2 표):
@@ -173,13 +187,15 @@ skala-rag/
 
 ### D의 그래프 조립부
 ```python
-from tools.retrieve import retrieve_papers      # A
-from tools.web import search_web                # B
-from agents.domain import make_domain_evaluator
-from agents.trl import make_trl_evaluator
+from skala_rag.tools.retrieve import retrieve_papers      # A
+from skala_rag.tools.web import search_web                # B
+from skala_rag.agents.domain import make_domain_evaluator
+from skala_rag.agents.trl import make_trl_evaluator
+from skala_rag.evidence_check import evidence_check
 
-graph.add_node("domain", make_domain_evaluator(retriever=retrieve_papers))
-graph.add_node("trl",    make_trl_evaluator(retriever=retrieve_papers, web_search=search_web))
+graph.add_node("domain",         make_domain_evaluator(retriever=retrieve_papers))
+graph.add_node("trl",            make_trl_evaluator(retriever=retrieve_papers, web_search=search_web))
+graph.add_node("evidence_check", evidence_check)
 ```
 
 ### C의 노트북 21, 22 (선택)
