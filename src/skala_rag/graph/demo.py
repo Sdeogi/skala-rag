@@ -16,7 +16,7 @@ from skala_rag.graph.workflow import PipelineServices
 SAMPLE_LABELS = {
     "market": {"market_size": "관련 시장 자료만 있음", "adoption": "연구 재현 수준", "ecosystem": "일부 있음"},
     "stakeholder": {"competitor_view": "중립", "adopter_view": "우려", "investor_view": "중립"},
-    "domain": {"memory": "적용 가능 보고", "quality": "조건부 보고", "latency": "조건부 보고", "throughput": "조건부 보고", "integration": "보고 없음"},
+    "domain": {"memory": "적용 가능 보고", "quality": "조건부 보고", "latency": "조건부 보고", "throughput": "조건부 보고", "integration": "낮음 보고"},
     "trl": {"trl": "TRL 4"},
 }
 FIXTURE_NOTE = "통합 흐름 검사용 합성 판정"

@@ -102,3 +102,66 @@ uv sync --only-group graph --only-group dev
 2. 시장성·이해관계자 판정 단계를 정한다(B의 수집 결과에 C의 `judge_one` 방식 적용 또는 B가 구현).
 3. `python app.py --mode replay --services skala_rag.integration.services:create_services`로 끝단 실행을 검증한다.
 4. C의 `schemas/state.py`와 D의 `graph/schemas.py`를 하나로 수렴할지 팀이 결정한다.
+
+## 2026-09-22 4차: 통합 계층 구현 (`feat/integration`)
+
+PR #1~#5가 모두 `main`에 합쳐진 뒤(`fea5054`) `feat/integration` 브랜치를 만들고 A/B/C 모듈을 D 그래프에 연결했다.
+
+### 구현
+
+- `src/skala_rag/integration/services.py`: `create_services()`가 `PipelineServices`를 만든다. 변환 규칙은 [GRAPH_OUTPUT_DESIGN.md](GRAPH_OUTPUT_DESIGN.md)의 "통합 계층" 절 참고. 팀 함수는 `IntegrationSettings`로 교체 가능해 `tests/test_integration.py`(8개)는 스텁으로 오프라인 실행한다.
+- `app.py`: `--services`를 생략하면 이 factory를 쓴다(`python app.py --mode live`). `--fixture`가 아닌 실행은 판정 LLM을 호출하므로 replay에서도 `OPENAI_API_KEY`를 요구한다(`config.missing_settings(services_need_llm=True)`).
+- `graph/schemas.TechFinding`에 `performance`(성능 보고 문장) 추가, 보고서 3장에 렌더링.
+- 보고서: 6장 실행 오류를 (종류, 노드, 사유)별로 묶어 건수를 표기, SUMMARY는 핵심 항목이 근거 미확인이면 같은 관점의 다른 통과 항목으로 대체, 5장 시사점의 조건 문자열 길이 제한, API 오류 메시지에 섞인 마스킹 키(`sk-proj***`)도 가림.
+- TRL 어댑터: 판정 이유를 "확인된 최고 단계 + 다음 미충족 단계"로 요약하고 단계별 상세는 `stages`에, 부족 증거는 다음 단계 것만 `missing_evidence`에 둔다.
+- 시장성·이해관계자 어댑터: 기술별로 따로 호출해 한 기술의 수집 실패(캐시 없음, 검색 API 오류)가 관점 전체를 비우지 않고 해당 기술만 `미확인`으로 남긴다.
+
+### 실제 데이터 실행 (replay, 웹 캐시 없음, OpenAI 키만 사용)
+
+`python app.py --mode replay --semantic-review on --report-name RAG-Output_replay`로 두 논문 PDF(33쪽)와 FAISS 색인을 써서 끝까지 실행했다. Tavily 키와 `data/web` 캐시가 없어 시장성·이해관계자·TRL 웹 단계는 미확인으로 남는다(정상 경로). 1차 실행에서 발견한 문제와 조치:
+
+| 발견 | 조치 |
+| --- | --- |
+| 셸에서 `.env` 값을 잘라 넣자 따옴표가 섞여 OpenAI 401 | python-dotenv로 읽도록 실행 절차 변경(`app.py`는 원래 `load_dotenv` 사용) |
+| 이해관계자 서비스가 캐시 부재 예외로 결과가 통째로 없음(`missing_item`) | 기술별 호출 + 미확인 대체 |
+| B의 검색 실패 오류가 라운드마다 반복되어 manifest 71건, 6장에 그대로 나열 | 6장에서 묶어 건수 표기 |
+| TRL 판정 이유가 7단계 문장을 이어 붙여 표와 5장을 뒤덮음 | 요약 이유 + `stages` 상세 |
+| InfiniGen은 핵심 항목(도메인 memory)이 미확인이라 SUMMARY에 판정이 없음 | 같은 관점의 다른 통과 항목으로 대체 |
+
+### 2차·3차 replay 실행에서 반영한 추가 조치
+
+- 검토 LLM 프롬프트에 라벨의 의미(설계 C.2~C.5, `agents/review.py::LABEL_MEANINGS`)를 함께 전달한다. 2차 실행에서 TRL 라벨이 모두 `unsupported_claim`으로 거부됐는데, 검토 LLM이 "TRL 3"이라는 라벨 문자열만 보고 판단했기 때문이다. 3차 실행에서는 TRL 두 건이 통과했고, 도메인 KIVI 응답 지연만 "근거가 메모리·처리량만 보고하고 지연은 보고하지 않는다"는 사유로 거부됐다(타당한 판정).
+- 검토 LLM의 거부 사유를 `evidence_check.items[].review_reason`과 `missing_questions[].review_reason`에 남기고 보고서 6장에 "검토 LLM: …"으로 표시한다.
+- 근거 검사에서 A의 `unverified` 주장 유형이 붙은 청크는 도메인·TRL 판정의 근거로 인정하지 않는다(설계 B.7). 근거 풀을 공유하므로 A가 unverified로 표시한 청크 ID를 C 판정기가 인용하면 `unverified_evidence`로 남는다.
+- 보완 라운드 정책: B의 시장성·이해관계자 에이전트는 고정 검색어 템플릿으로 수집하고 부족 질문 기반 재검색을 지원하지 않으므로, 보완 라운드에서는 재수집하지 않고 이전 판정을 유지한다(`metrics.repair_skipped`). TRL 웹 단계는 보완 라운드에서 1차 live 라운드가 저장한 `data/web` 캐시를 replay로 읽어 재판정만 한다. 그렇지 않으면 live 보완 2회가 같은 Tavily 검색을 세 번 반복한다.
+- 어댑터는 근거 ID가 없는 TRL 단계 `충족`을 미확인으로 내린다(C 판정기와 같은 규칙).
+
+3차 replay 실행 결과(웹 캐시 없음): 85초, LLM 호출 66회(기술 조사 16, 도메인 13, TRL 21, 검토 16), 검색 35회, 근거 검사 24항목 중 통과 11(도메인 9, TRL 2), 미확인 13(시장성 6·이해관계자 6은 캐시 없음, 도메인 1은 검토 거부). manifest 오류 56건은 6장에서 3줄로 묶였다.
+
+### `.env`와 live 실행
+
+사용자가 전달한 Tavily 키를 `skala-rag/.env`에 기록했고(`.gitignore` 대상), live 실행에 필요한 OpenAI 키는 `ai_service/langgraph-v1/.env`의 값을 같은 파일에 복사했다. `python app.py --mode live --report-name RAG-Output_live` 실행 결과는 아래에 추가한다.
+
+live 실행 결과(`python app.py --mode live --report-name RAG-Output_live`, Tavily 키 적용): 151초에 끝까지 완료. 웹 검색 34회, 원문 조회 시도 약 50회, `data/web` 캐시 122개, 출처 21개(논문 2 + 웹 19). 근거 검사 24항목 중 통과 13, 미확인 11(미발견 6, 검토 LLM 거부 5). 종합 LLM이 쌍 4개(상충 2, 일치 2)를 작성해 모두 검증을 통과했고, SUMMARY LLM은 1,200자 제한을 넘겨 규칙 기반으로 대체됐다. manifest 오류 6건: B의 인용문 검증 실패 2건, Tavily 응답 형식 오류 3건(이해관계자 InfiniGen 수집 전체 실패 포함), TRL 웹 단계 1건.
+
+live 실행 후 반영한 조치:
+
+| 발견 | 조치 |
+| --- | --- |
+| SUMMARY LLM 출력이 제한 길이를 넘겨 전부 버려짐 | 문장 경계에서 잘라 검증(`trim_to_sentences`), `summary_trimmed` 기록 |
+| 이해관계자 InfiniGen 수집이 Tavily 일시 오류로 실패했는데 보완 라운드가 재수집을 건너뜀 | 수집 자체가 실패한 기술만 보완 라운드에서 다시 수집 |
+| 도메인 `보고 없음` 판정에 근거 ID가 붙어 검토 LLM이 당연히 거부 | `보고 없음`을 미발견 라벨로 취급(근거·검토 생략, 보완 대상 유지) |
+| 웹 출처의 저자·발행일이 없어 REFERENCE가 "저자 미상" | 저자가 없으면 사이트 도메인을 기관명으로 표기 |
+| 검토 LLM이 B의 `직접 자료 있음`(실제로는 관련 시장 자료) 등 5건을 거부 | 정상 동작. 거부 사유가 6장에 표시되므로 B 판정 기준(요약기의 `scope`)을 팀이 검토 |
+| 시장성 근거 후보에 무관한 사이트(kiwidata.com "Kiwi Blog")가 포함 | B의 후보 필터 문제로 기록. 검토 LLM이 해당 판정을 거부해 보고서에는 통과 판정으로 실리지 않음 |
+
+검증: `python app.py --mode replay --llm-output on --semantic-review on`으로 live 캐시를 재생하며 LLM 종합·SUMMARY를 다시 실행한 결과는 아래에 추가한다.
+검증 실행 결과(`--mode replay --llm-output on --semantic-review on`, live 캐시 재생): 122초, 웹 검색 34회 모두 캐시 재생, SUMMARY LLM 979자 통과(`report_mode: llm_assisted`), 종합 LLM 쌍 4개 중 2개 채택·2개 제외(실제 일치 아님으로 판단), 검토 LLM 21회. 근거 검사 24항목 중 통과 14, 미발견 6, 검토 거부 4. live에서 검증에 실패해 캐시가 없던 페이지는 replay에서 `FileNotFoundError`로 남는다(정상). 테스트 87개 통과.
+
+### 팀 확인 사항 (통합 후 남은 것)
+
+1. B 시장성: 요약기의 `scope`가 관련 시장 자료를 `technology`로 표시해 `직접 자료 있음`이 붙는 사례가 있다(검토 LLM이 거부). 후보 필터가 무관한 사이트(kiwidata.com)와 원 논문의 arXiv HTML을 근거 후보로 통과시킨다.
+2. B 이해관계자: `_search_topic`이 Tavily 응답 오류를 잡지 않아 기술 하나의 수집이 통째로 실패한다(어댑터가 `미확인`으로 대체하고 보완 라운드에서 재수집).
+3. 설계 B.6의 실행당 검색 20회·원문 30건 상한을 B 모듈이 강제하지 않는다. live 1회에 검색 34회, 원문 조회 시도 약 50회가 발생했다.
+4. C 도메인: `보고 없음` 판정에 근거 ID를 붙여 반환하는 경우가 있다. D는 미발견 라벨로 처리한다.
+5. 스키마 수렴: C `schemas/state.py`와 D `graph/schemas.py`는 어댑터로 연결된 상태이며 하나로 합칠지는 팀 결정.

@@ -58,6 +58,8 @@ def test_reference_format_for_papers_and_web_pages():
     web = format_reference("w1", {"title": "Blog", "author_or_org": "Google Research", "published_at": "2026-03-30", "venue": "Google Research Blog", "url": "https://example.org", "source_type": "web"})
     assert web == "[w1] Google Research(2026-03-30). Blog. Google Research Blog, https://example.org"
     assert format_reference("x", {}) == "[x] 저자 미상(발행일 미상). 제목 미상. (URL 미기재)"
+    site = format_reference("s", {"title": "Kiwi Blog", "url": "https://www.kiwidata.com/blog/post", "source_type": "web"})
+    assert site == "[s] kiwidata.com(발행일 미상). Kiwi Blog. https://www.kiwidata.com/blog/post"
 
 
 def test_trl_stage_details_and_summary_limit():
@@ -66,7 +68,7 @@ def test_trl_stage_details_and_summary_limit():
     state["evidence"]["e1"]["quote"] = "q" * 1000
     report = build_report(state)
     trl_section = next(section for section in report["sections"] if section["heading"] == "4.4 기술 성숙도")
-    assert any("TRL 5 미충족, PR 미확인" in p and "vLLM 통합 PR" in p for p in trl_section["paragraphs"])
+    assert any("TRL 5 미충족 (PR 미확인)" in p and "vLLM 통합 PR" in p for p in trl_section["paragraphs"])
     assert len(report["sections"][0]["paragraphs"][0]) <= SUMMARY_LIMIT
     appendix = next(section for section in report["sections"] if section["heading"].startswith("부록"))
     assert all(len(p) < 600 for p in appendix["paragraphs"])
@@ -78,6 +80,23 @@ def test_report_redacts_secrets_and_private_contact_details():
     markdown = build_report(state)["markdown"]
     assert "sk-test0123456789abcdefghijkl" not in markdown and "owner@example.org" not in markdown
     assert "[REDACTED]" in markdown
+
+
+def test_limitations_group_repeated_errors_and_summary_falls_back_to_any_passed_field():
+    state = base_state()
+    state["errors"] = {f"market-KIVI-{i}": {"node": "market", "reason": "search 단계 실패 (FileNotFoundError)", "fatal": False, "kind": "service"} for i in range(5)}
+    state["errors"]["trl-0"] = {"node": "trl", "reason": "other", "fatal": False, "kind": "service"}
+    state["errors"]["stakeholder-a"] = {"node": "stakeholder", "reason": "FileNotFoundError: 캐시가 없습니다: search_aaa.json", "fatal": False, "kind": "service"}
+    state["errors"]["stakeholder-b"] = {"node": "stakeholder", "reason": "FileNotFoundError: 캐시가 없습니다: search_bbb.json", "fatal": False, "kind": "service"}
+    state["missing_questions"][0]["review_reason"] = "근거가 채택 사실을 말하지 않음"
+    state["domain_analysis"] = {"technologies": {"KIVI": {"memory": {"label": "미확인", "reason": "없음", "evidence_ids": []}, "latency": {"label": "조건부 보고", "reason": "지연 보고", "evidence_ids": ["e1"]}}}}
+    report = build_report(state)
+    limits = next(section for section in report["sections"] if section["heading"] == "6. 한계점")["paragraphs"]
+    assert any(p.endswith("search 단계 실패 (FileNotFoundError) ×5") for p in limits)
+    assert sum("실행 오류" in p for p in limits) == 3
+    assert any(p.startswith("실행 오류(service) stakeholder: FileNotFoundError") and p.endswith("×2") for p in limits)
+    assert any("검토 LLM: 근거가 채택 사실을 말하지 않음" in p for p in limits)
+    assert "도메인 적용 관점의 응답 지연 '조건부 보고'" in report["sections"][0]["paragraphs"][0]
 
 
 def test_josa_handles_hangul_digits_and_latin():

@@ -45,7 +45,7 @@ A/B/C는 자기 출력을 이 모델로 검증할 수 있고, 그래프는 모�
 - `MissingQuestion`: perspective, technology, field, question, reasons
 - `ErrorRecord`: node, reason, fatal, recovered, kind(service|schema|pipeline)
 
-Rubric 라벨(`LABELS`, 설계 C.2~C.5). 모든 항목은 추가로 `미확인`, `판단 유보`를 받는다.
+Rubric 라벨(`LABELS`, 설계 C.2~C.5). 모든 항목은 추가로 `미확인`, `판단 유보`를 받는다. `미확인`, `판단 유보`, 도메인의 `보고 없음`은 "자료를 찾지 못함"을 뜻하는 미발견 라벨(`NOT_FOUND_LABELS`)로, 근거 ID를 요구하지 않고 의미 검토도 하지 않지만 통과 판정으로 세지 않는다(`not_found_label`로 보완 대상).
 
 | 관점 | 항목 | 라벨 |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ Rubric 라벨(`LABELS`, 설계 C.2~C.5). 모든 항목은 추가로 `미확인`,
 
 ## 근거 검사와 보완 (`graph/evidence_check.py`, `agents/review.py`)
 
-규칙 검사 실패 이유: `missing_item`, `invalid_label`, `missing_evidence`, `unknown_evidence`, `wrong_technology`, `unknown_source`, `unverified_evidence`, `unsupported_claim`(검토 LLM). 경고(통과 유지): `semantic_review_skipped`(예산 초과), `semantic_review_error`(호출 실패). 검토 LLM은 (관점, 기술, 항목, 판정, 근거 ID·인용구) 단위로 결과를 캐시해 보완 루프에서 같은 항목을 다시 검토하지 않는다. `--semantic-review auto|on|off`, `--max-review-calls`로 조절한다.
+규칙 검사 실패 이유: `missing_item`, `invalid_label`, `not_found_label`(미발견 라벨), `missing_evidence`, `unknown_evidence`, `wrong_technology`, `unknown_source`, `unverified_evidence`, `unsupported_claim`(검토 LLM, 거부 사유는 `review_reason`에 기록되어 보고서 6장에 표시). 경고(통과 유지): `semantic_review_skipped`(예산 초과), `semantic_review_error`(호출 실패). 검토 LLM은 (관점, 기술, 항목, 판정, 근거 ID·인용구) 단위로 결과를 캐시해 보완 루프에서 같은 항목을 다시 검토하지 않는다. `--semantic-review auto|on|off`, `--max-review-calls`로 조절한다.
 
 ## 종합과 보고서 (`agents/synthesis.py`, `agents/llm_output.py`, `agents/report.py`)
 
@@ -85,9 +85,26 @@ Rubric 라벨(`LABELS`, 설계 C.2~C.5). 모든 항목은 추가로 `미확인`,
 
 ## CLI (`app.py`)
 
-`python app.py --mode live|replay [--services module:factory | --fixture] [--output-dir] [--report-name] [--paper-dir] [--model-id] [--technologies SW HW] [--domain] [--as-of] [--web-search-max] [--fetch-max] [--tool-timeout] [--tool-retries] [--max-paper-pages] [--deterministic-output] [--semantic-review auto|on|off] [--max-review-calls] [--recursion-limit]`, `python app.py --draw-graph [PATH]`.
+`python app.py --mode live|replay [--fixture | --services module:factory(기본 skala_rag.integration.services:create_services)] [--output-dir] [--report-name] [--paper-dir] [--model-id] [--technologies SW HW] [--domain] [--as-of] [--web-search-max] [--fetch-max] [--tool-timeout] [--tool-retries] [--max-paper-pages] [--deterministic-output] [--llm-output auto|on|off] [--semantic-review auto|on|off] [--max-review-calls] [--recursion-limit]`, `python app.py --draw-graph [PATH]`.
 
-`.env`를 자동으로 읽는다. live는 `OPENAI_API_KEY`, `TAVILY_API_KEY`가 필요하고 누락된 이름을 알려준다. 실행은 `stream(values)`로 마지막 State를 유지하므로 그래프 내부 예외가 나도 그때까지의 결과와 오류가 manifest에 남는다.
+`.env`를 자동으로 읽는다(`RAG_DISABLE_DOTENV=1`이면 읽지 않음, 테스트용). `--llm-output on`은 replay에서도 캐시를 재생한 뒤 종합·SUMMARY LLM을 실행한다. live는 `OPENAI_API_KEY`, `TAVILY_API_KEY`가 필요하고, replay도 실제 서비스는 판정 LLM을 호출하므로 `OPENAI_API_KEY`가 필요하다(`--fixture`만 키 없이 실행). 누락된 이름을 알려준다. 실행은 `stream(values)`로 마지막 State를 유지하므로 그래프 내부 예외가 나도 그때까지의 결과와 오류가 manifest에 남는다.
+
+## 통합 계층 (`integration/services.py`)
+
+`create_services()`가 A/B/C 모듈을 `PipelineServices`에 연결한다. 변환 규칙:
+
+| 서비스 | 호출하는 팀 모듈 | 변환 |
+| --- | --- | --- |
+| prepare | `data/papers/manifest.json`, A `tools.retrieve.ingest.build_index`(색인 없을 때) | 논문 Source(`source_type="paper"`, pages, venue, authors, published_at, sha256). manifest에 없는 기술이면 치명 오류 |
+| technical | A `agents.technical.run_technical_research(tech_names, model=run_config.model_id)` | Evidence `tech_name/page/section/experimental_condition` → `technology/location/conditions`. findings `{claims, evidence_ids}` 4범주 → `TechFinding(principle, experiment_conditions, performance, limitations, evidence_ids)`. errors 리스트 → dict |
+| market, stakeholder | B `agents.market.run_market_agent`, `agents.stakeholder.run_stakeholder_agent(technologies, mode, cache_dir)` | 이미 D 형식. 기술별로 따로 호출해 한 기술의 수집 실패는 그 기술만 `미확인`으로 남긴다. 보완 라운드에서는 수집 자체가 실패했던 기술만 다시 수집한다(B는 부족 질문 기반 재검색이 없어 성공한 수집을 반복해도 결과가 같고 API 예산만 쓴다). 오류 키에 `-r{round}` 접미 |
+| domain | C `agents.domain.judge_one(spec, TechName, candidates, model)` + `prompts.domain.DOMAIN_RUBRIC` | A `retrieve_papers` 청크 → C `Evidence`(claim=첫 문장, quote=청크, location=`p.N section`). `RubricItem.verdict` → `label`. State에 없는 청크만 evidence로 등록. 보완 호출에서는 부족한 (기술, 항목)만 재판정 |
+| trl | C `agents.trl.judge_stage` + `prompts.trl.TRL_STAGES` | RAG 단계는 A 청크, 웹 단계는 B `get_search_results → get_source → summarize_source`(검증된 인용만) → C `Evidence`. 단계별 결과를 `TRLJudgment(stages, missing_evidence, highest_confirmed, estimation_note)`로 기록하고 판정 이유는 "확인된 최고 단계 + 다음 미충족 단계"로 요약. 근거 ID 없는 `충족`은 미확인으로 내림. 보완 호출에서는 부족한 기술의 7단계를 다시 판정하되 웹 단계는 1차 라운드의 `data/web` 캐시를 replay로 읽는다 |
+
+- 관점 노드는 스레드로 병렬 실행되므로 FAISS·e5 접근은 `_RETRIEVE_LOCK`으로 직렬화한다.
+- 웹 단계 예산: TRL 웹 단계는 단계당 검색 1회, 원문 조회 `fetch_per_stage`(기본 2)로 제한한다. B의 시장성·이해관계자 수집 예산은 B 모듈의 인자(`max_results`, `sources_per_topic`, `max_attempts_per_topic` 등)로 정하며 `IntegrationSettings.market_kwargs/stakeholder_kwargs`로 넘긴다. 설계 B.6의 실행당 상한(검색 20, 원문 30)은 B 모듈 자체가 강제하지 않으므로 manifest의 `metrics.totals`로 사후 확인한다.
+- C의 판정기는 `TechName` enum(KIVI, InfiniGen)만 받는다. 다른 기술을 지정하면 도메인·TRL 서비스가 오류로 기록된다.
+- 모든 팀 함수는 `IntegrationSettings`로 교체할 수 있어(`retrieve`, `technical_research`, `market_agent`, `judge_domain`, `judge_stage`, `search_results`, ...) 테스트는 스텁으로 오프라인 실행한다(`tests/test_integration.py`).
 
 ## 합병 체크리스트
 

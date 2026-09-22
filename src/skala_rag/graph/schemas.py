@@ -42,6 +42,9 @@ FIELD_TITLES: dict[str, str] = {
 }
 # Labels every field accepts when no evidence was found (design C.1).
 UNKNOWN_LABELS: tuple[str, ...] = ("미확인", "판단 유보")
+# Labels that mean "no material found" (UNKNOWN_LABELS plus the domain perspective's 보고 없음, design C.5).
+# They need no evidence and are not semantically reviewed, but they never count as a supported judgment.
+NOT_FOUND_LABELS: tuple[str, ...] = UNKNOWN_LABELS + ("보고 없음",)
 # Rubric label sets from design C.2~C.5. ``None`` means the TRL pattern applies.
 LABELS: dict[str, dict[str, tuple[str, ...] | None]] = {
     "market": {
@@ -254,6 +257,7 @@ class TechFinding(BaseModel):
 
     principle: str = ""
     experiment_conditions: list[str] = Field(default_factory=list)
+    performance: list[str] = Field(default_factory=list)  # 성능 수치 보고 문장 (수치 묶음은 measurements)
     measurements: list[Measurement] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)

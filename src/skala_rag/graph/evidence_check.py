@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from .schemas import FIELD_TITLES, LABELS, PERSPECTIVE_TITLES, is_valid_label
+from .schemas import FIELD_TITLES, LABELS, NOT_FOUND_LABELS, PERSPECTIVE_TITLES, is_valid_label
 from .state import GraphState
 
 RUBRICS = LABELS
@@ -41,16 +41,22 @@ def check_evidence(state: GraphState, semantic_review: SemanticReview | None = N
                 judgment = judgments.get(field)
                 problems: list[str] = []
                 warnings: list[str] = []
+                review_reason = ""
                 if not isinstance(judgment, Mapping):
                     problems.append("missing_item")
                     judgment = {}
                 label = str(judgment.get("label", "") or "").strip()
                 if not is_valid_label(perspective, field, label):
                     problems.append("invalid_label")
-                ids = judgment.get("evidence_ids") or []
-                if not isinstance(ids, list) or not ids:
-                    problems.append("missing_evidence")
-                    ids = []
+                if label in NOT_FOUND_LABELS and "missing_item" not in problems:
+                    # "no material found": nothing to verify, but the item stays open for repair.
+                    problems.append("not_found_label")
+                    ids: list[Any] = []
+                else:
+                    ids = judgment.get("evidence_ids") or []
+                    if not isinstance(ids, list) or not ids:
+                        problems.append("missing_evidence")
+                        ids = []
                 valid: list[Mapping[str, Any]] = []
                 for identifier in ids:
                     item = evidence.get(identifier)
@@ -76,6 +82,7 @@ def check_evidence(state: GraphState, semantic_review: SemanticReview | None = N
                     else:
                         if not supported:
                             problems.append("unsupported_claim")
+                            review_reason = str(getattr(semantic_review, "last_reason", "") or "")
                 passed = not problems
                 reasons = sorted(set(problems))
                 checks.append(
@@ -86,6 +93,7 @@ def check_evidence(state: GraphState, semantic_review: SemanticReview | None = N
                         "passed": passed,
                         "reasons": reasons,
                         "warnings": sorted(set(warnings)),
+                        "review_reason": review_reason,
                     }
                 )
                 if not passed:
@@ -99,6 +107,7 @@ def check_evidence(state: GraphState, semantic_review: SemanticReview | None = N
                                 f"'{FIELD_TITLES[field]}' 판정을 뒷받침하는 원문 근거는 무엇인가?"
                             ),
                             "reasons": reasons,
+                            "review_reason": review_reason,
                         }
                     )
     events: list[dict[str, Any]] = []

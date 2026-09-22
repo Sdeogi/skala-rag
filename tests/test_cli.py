@@ -19,9 +19,13 @@ def test_documented_direct_cli_runs_without_pythonpath(tmp_path):
     assert "합성 fixture" in (tmp_path / "report.md").read_text(encoding="utf-8")
 
 
-def test_cli_explains_missing_integration_services():
-    completed = run_cli("--mode", "replay")
-    assert completed.returncode != 0 and "--services is required" in completed.stderr
+def test_cli_defaults_to_integration_services_and_checks_llm_key(tmp_path):
+    environment = {key: value for key, value in os.environ.items() if key not in ("OPENAI_API_KEY", "TAVILY_API_KEY")}
+    environment["RAG_DISABLE_DOTENV"] = "1"
+    completed = run_cli("--mode", "replay", "--output-dir", str(tmp_path / "out"), env=environment)
+    assert completed.returncode != 0
+    assert "--services is required" not in completed.stderr
+    assert "OPENAI_API_KEY" in completed.stderr or "실행 실패" in completed.stderr
 
 
 def test_cli_report_name_and_options(tmp_path):
@@ -43,6 +47,7 @@ def test_cli_failing_services_module_writes_failure_manifest(tmp_path):
     (tmp_path / "broken_services.py").write_text("def create_services():\n    raise ImportError('adapter missing')\n", encoding="utf-8")
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(tmp_path)
+    environment.setdefault("OPENAI_API_KEY", "test-key-never-used")  # the factory fails before any model call
     completed = run_cli("--mode", "replay", "--services", "broken_services:create_services", "--output-dir", str(tmp_path / "out"), env=environment)
     assert completed.returncode == 1 and "adapter missing" in completed.stderr
     manifest = (tmp_path / "out" / "run_manifest.json").read_text(encoding="utf-8")

@@ -1,7 +1,7 @@
 import pytest
 from conftest import FakeModel
 
-from skala_rag.agents.review import LLMSemanticReviewer
+from skala_rag.agents.review import LLMSemanticReviewer, label_meaning
 from skala_rag.graph.evidence_check import ReviewBudgetExceeded
 
 JUDGMENT = {"label": "우려", "reason": "운영 부담", "conditions": "대규모 배포"}
@@ -25,3 +25,13 @@ def test_reviewer_respects_call_budget():
     assert reviewer("market", "KIVI", "adoption", JUDGMENT, EVIDENCE) is True
     with pytest.raises(ReviewBudgetExceeded):
         reviewer("market", "InfiniGen", "adoption", JUDGMENT, EVIDENCE)
+
+
+def test_label_meanings_cover_rubric_labels_and_reviewer_exposes_reason():
+    assert "실험" in label_meaning("TRL 3") and "통합 부담이 낮다" in label_meaning("낮음 보고")
+    assert label_meaning("TRL 3-4").startswith("TRL 단계 판정") and label_meaning("이상한 라벨") == ""
+    reviewer = LLMSemanticReviewer(FakeModel({"supported": False, "reason": "무관"}))
+    reviewer("market", "KIVI", "adoption", JUDGMENT, EVIDENCE)
+    assert reviewer.last_reason == "무관"
+    reviewer("market", "KIVI", "adoption", JUDGMENT, EVIDENCE)  # cached
+    assert reviewer.last_reason == "무관" and reviewer.calls == 1
