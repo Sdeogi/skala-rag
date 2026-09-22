@@ -7,6 +7,7 @@ venv/
 # Env & secrets
 .env
 .env.*
+!.env.template
 
 # OS / Editor 
 .DS_Store
