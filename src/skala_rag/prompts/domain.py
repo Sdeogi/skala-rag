@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from schemas.state import Evidence, IntegrationVerdict, StandardVerdict
+from skala_rag.schemas.state import Evidence, IntegrationVerdict, StandardVerdict
 
 
 # ---------------------------------------------------------------------------

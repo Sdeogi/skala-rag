@@ -14,7 +14,7 @@
 ## 사용 (D의 그래프 조립부에서)
 
 ```python
-from evidence_check import evidence_check
+from skala_rag.evidence_check import evidence_check
 
 graph.add_node("evidence_check", evidence_check)
 graph.add_conditional_edges(
@@ -29,7 +29,7 @@ from __future__ import annotations
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from schemas.state import (
+from skala_rag.schemas.state import (
     CheckResult,
     Evidence,
     FailedItem,

@@ -17,6 +17,7 @@
 | Pydantic 공용 결과 스키마 | `src/skala_rag/schemas/state.py` |
 | 위 두 에이전트의 Rubric 프롬프트 | `src/skala_rag/prompts/domain.py`, `src/skala_rag/prompts/trl.py` |
 | 근거 검사 로직 | `src/skala_rag/evidence_check.py` |
+| 보완 노드 (재검색·재판정 루프) | `src/skala_rag/supplement.py` |
 
 > **배치 규약:** 팀 통일을 위해 `src/skala_rag/` 아래 (B의 `feat/web-evidence` 브랜치와 동일). `pyproject.toml`에 hatchling build-system을 추가해 editable 설치되므로 어디서든 `from skala_rag.X import Y` 가능.
 
@@ -52,6 +53,7 @@ C의 산출물이 A/B/D와 어떻게 맞물리는지:
 - `src/skala_rag/agents/domain.py::make_domain_evaluator(retriever)` → 노드 반환값 `{"domain_analysis": PerspectiveResult, "evidence": {...}}`
 - `src/skala_rag/agents/trl.py::make_trl_evaluator(retriever, web_search)` → 노드 반환값 `{"trl_analysis": PerspectiveResult, "evidence": {...}}`
 - `src/skala_rag/evidence_check.py::evidence_check(state)` → `{"evidence_check": CheckResult, "missing_questions": list[Question], "retry_count": int}`
+- `src/skala_rag/supplement.py::make_supplement_node(retriever, web_search)` → 노드 반환값 `{"retry_count": int, "evidence": {...}, "missing_questions": [], "domain_analysis": ..., "trl_analysis": ...}`
 - 조건 분기(보완 vs 평가 종합)는 D가 담당. C는 `CheckResult.needs_retry` 필드를 노출.
 
 ### 1.4 모두가 공유하는 것
@@ -100,6 +102,7 @@ skala-rag/
     │   ├── domain.py                 # make_domain_evaluator factory (C)
     │   └── trl.py                    # make_trl_evaluator factory (C)
     ├── evidence_check.py             # 근거 검사 노드 (C)
+    ├── supplement.py                  # 보완 노드 — 재검색·재판정 루프 (C)
     ├── tools/                        # (A/B 담당 — retrieve.py, web.py)
     ├── database/                     # (초기 셋업, 미사용)
     ├── config.py, main.py            # (초기 셋업, 미사용)
@@ -153,6 +156,16 @@ skala-rag/
   ```
   D의 그래프 조립부만 `skala_rag.agents.*.make_*`와 A/B의 `skala_rag.tools.*`를 wire하면 됨.
 
+- **Phase 6 추가: 보완 노드 구현.**
+  - `src/skala_rag/supplement.py::make_supplement_node(retriever, web_search, model_name)` factory.
+  - DOMAIN: 각 missing_question의 (tech, item_key)를 재검색·재판정해 items에서 교체.
+  - TRL: 해당 tech 전체(7단계) 재판정해 items에서 교체 (item_key 무관, tech 단위).
+  - MARKET/STAKEHOLDER: 재판정 로직 없어 skip (B의 확장 여지).
+  - `retry_count += 1`, `missing_questions = []` 리턴 (다음 evidence_check가 재생성).
+  - Status·unresolved_questions 재계산해 PerspectiveResult 갱신.
+  - 스모크 검증: KIVI/memory 미확인 → "조건부 보고"로 승격, quality 유지, status insufficient→complete 확인.
+  - **이로써 PDF D.3 재시도 루프 완성:** `4관점 병렬 → evidence_check → (needs_retry?) → supplement → 다시 evidence_check → ... → 최대 2회 후 종합`.
+
 - **Phase 5 후 리팩터: `src/skala_rag/` 아래로 이관.**
   - 최초 커밋(28691a6)은 PDF `E.2` 스펙대로 프로젝트 루트에 `agents/`, `prompts/`, `schemas/`, `evidence_check.py`를 두었으나, B(`feat/web-evidence`)가 초기 프로젝트 구조인 `src/skala_rag/` 아래에 코드를 넣은 것을 확인.
   - 팀 통합 마찰을 줄이기 위해 C 산출물도 `src/skala_rag/` 아래로 이동.
@@ -192,10 +205,20 @@ from skala_rag.tools.web import search_web                # B
 from skala_rag.agents.domain import make_domain_evaluator
 from skala_rag.agents.trl import make_trl_evaluator
 from skala_rag.evidence_check import evidence_check
+from skala_rag.supplement import make_supplement_node
 
 graph.add_node("domain",         make_domain_evaluator(retriever=retrieve_papers))
 graph.add_node("trl",            make_trl_evaluator(retriever=retrieve_papers, web_search=search_web))
 graph.add_node("evidence_check", evidence_check)
+graph.add_node("supplement",     make_supplement_node(retriever=retrieve_papers, web_search=search_web))
+
+# 조건 분기 (D)
+graph.add_conditional_edges(
+    "evidence_check",
+    lambda s: "retry" if s["evidence_check"].needs_retry else "synthesize",
+    {"retry": "supplement", "synthesize": "synthesis"},
+)
+graph.add_edge("supplement", "evidence_check")   # 다시 검사로
 ```
 
 ### C의 노트북 21, 22 (선택)

@@ -5,9 +5,9 @@
 ## 사용 (D의 그래프 조립부에서)
 
 ```python
-from tools.retrieve import retrieve_papers   # A(김건우) 담당
-from tools.web import search_web             # B(서경덕) 담당
-from agents.trl import make_trl_evaluator
+from skala_rag.tools.retrieve import retrieve_papers   # A(김건우) 담당
+from skala_rag.tools.web import search_web             # B(서경덕) 담당
+from skala_rag.agents.trl import make_trl_evaluator
 
 trl_node = make_trl_evaluator(
     retriever=retrieve_papers,
@@ -24,14 +24,14 @@ from typing import Callable, Literal
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from prompts.trl import (
+from skala_rag.prompts.trl import (
     TRL_STAGES,
     TRL_STAGE_USER_TEMPLATE,
     TRL_SYSTEM_PROMPT,
     TRLStageSpec,
     format_evidence_block,
 )
-from schemas.state import (
+from skala_rag.schemas.state import (
     CompleteStatus,
     Evidence,
     PerspectiveName,

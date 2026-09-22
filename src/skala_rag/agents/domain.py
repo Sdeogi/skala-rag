@@ -5,8 +5,8 @@
 ## 사용 (D의 그래프 조립부에서)
 
 ```python
-from tools.retrieve import retrieve_papers   # A(김건우) 담당
-from agents.domain import make_domain_evaluator
+from skala_rag.tools.retrieve import retrieve_papers   # A(김건우) 담당
+from skala_rag.agents.domain import make_domain_evaluator
 
 domain_node = make_domain_evaluator(retriever=retrieve_papers, model_name="gpt-5.4-mini")
 graph.add_node("domain", domain_node)
@@ -21,7 +21,7 @@ from typing import Callable, Literal
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from prompts.domain import (
+from skala_rag.prompts.domain import (
     DOMAIN_RUBRIC,
     DomainRubricSpec,
     SYSTEM_PROMPT,
@@ -29,7 +29,7 @@ from prompts.domain import (
     format_evidence_block,
     format_label_notes,
 )
-from schemas.state import (
+from skala_rag.schemas.state import (
     CompleteStatus,
     Evidence,
     IntegrationVerdict,

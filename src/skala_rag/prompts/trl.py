@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from schemas.state import Evidence, TRLLevel
+from skala_rag.schemas.state import Evidence, TRLLevel
 
 
 # ---------------------------------------------------------------------------
