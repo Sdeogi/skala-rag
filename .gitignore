@@ -21,3 +21,6 @@ notebooks/
 # Generated web cache (B)
 data/web/*
 !data/web/.gitkeep
+
+# Generated reports (D)
+outputs/

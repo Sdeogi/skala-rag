@@ -46,11 +46,25 @@ dependencies = [
     "ragas>=0.4.3",
     "langgraph-swarm>=0.1.0",
     "pymupdf>=1.28.2",
+    "jinja2>=3.1.0",
+    "reportlab>=4.0.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+]
+# Minimal runtime of the graph/output branch (D). Install with:
+#   uv sync --only-group graph --only-group dev
+# The full team environment (A/B/C tooling included) is `uv sync --group dev`.
+graph = [
+    "langgraph>=1.0.1",
+    "langchain-core>=1.0.0",
+    "langchain-openai>=1.0.1",
+    "pydantic>=2.0",
+    "jinja2>=3.1.0",
+    "reportlab>=4.0.0",
+    "python-dotenv>=1.2.1",
 ]
 
 [tool.pytest.ini_options]

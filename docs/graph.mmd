@@ -1,0 +1,46 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	prepare(prepare)
+	technical(technical)
+	technical_failed(technical_failed)
+	market(market)
+	stakeholder(stakeholder)
+	domain(domain)
+	trl(trl)
+	evidence_check(evidence_check)
+	retry(retry)
+	repair(repair)
+	synthesis(synthesis)
+	report(report)
+	save(save)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> prepare;
+	domain --> evidence_check;
+	evidence_check -.-> retry;
+	evidence_check -.-> synthesis;
+	market --> evidence_check;
+	prepare -.-> save;
+	prepare -.-> technical;
+	repair --> evidence_check;
+	report --> save;
+	retry -.-> evidence_check;
+	retry -.-> repair;
+	stakeholder --> evidence_check;
+	synthesis --> report;
+	technical -.-> domain;
+	technical -.-> market;
+	technical -.-> save;
+	technical -.-> stakeholder;
+	technical -.-> technical_failed;
+	technical -.-> trl;
+	technical_failed --> save;
+	trl --> evidence_check;
+	save --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

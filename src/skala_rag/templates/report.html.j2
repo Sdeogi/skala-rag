@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    body { max-width: 900px; margin: 40px auto; padding: 0 24px; color: #182333; background: #fff; font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+    header h1 { font-size: 1.6rem; margin-bottom: 4px; border: 0; }
+    header .meta { color: #5b6672; font-size: 0.85rem; margin-top: 0; }
+    nav ol { padding-left: 20px; }
+    h1 { border-bottom: 1px solid #ccd4dd; padding-bottom: 8px; margin-top: 42px; font-size: 1.35rem; }
+    h2 { margin-top: 28px; font-size: 1.1rem; }
+    p { overflow-wrap: anywhere; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin: 12px 0; }
+    th, td { border: 1px solid #c9d1da; padding: 6px 8px; vertical-align: top; text-align: left; }
+    th { background: #eef2f6; }
+    @media print { body { max-width: none; margin: 0; } h1, h2 { break-after: avoid; } p, tr { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>{{ title }}</h1>
+  <p class="meta">{{ meta }}</p>
+</header>
+<nav aria-label="목차">
+  <ol>
+  {% for section in sections %}{% if section.level == 1 %}<li><a href="#section-{{ loop.index0 }}">{{ section.heading }}</a></li>{% endif %}{% endfor %}
+  </ol>
+</nav>
+{% for section in sections %}
+  <section id="section-{{ loop.index0 }}">
+    {% if section.level == 1 %}<h1>{{ section.heading }}</h1>{% else %}<h2>{{ section.heading }}</h2>{% endif %}
+    {% for paragraph in section.paragraphs %}<p>{{ paragraph | urlize(target="_blank", rel="noopener noreferrer") }}</p>{% endfor %}
+    {% if section.table and section.table.rows %}
+    <table>
+      <thead><tr>{% for column in section.table.columns %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in section.table.rows %}<tr>{% for cell in row %}<td>{{ cell | urlize(target="_blank", rel="noopener noreferrer") }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+  </section>
+{% endfor %}
+</body>
+</html>
