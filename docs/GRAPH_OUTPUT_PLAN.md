@@ -13,3 +13,5 @@
 검증 명령: `.venv/bin/python -m pytest -q`, `PYTHONPATH=src .venv/bin/python app.py --mode replay --fixture --output-dir /tmp/skala-rag-graph-output-smoke`.
 
 2026-09-22 검증: 병렬 동시 실행, 두 번 제한과 한 번 성공 보완, 치명적 조기 종료, 유효하지 않은 출처/라벨/TRL 범위, 의미 검토 콜백, LLM 출력 가드, 민감정보 가림, 직접 CLI 실행을 테스트했다. 합성 PDF의 한글과 마지막 REFERENCE를 렌더링하여 확인했다. 실제 논문·웹 근거로 전체 보고서를 실행하는 검증은 A/B/C 통합 후 가능하다.
+
+6. [x] 2026-09-22 검토 결과(`GRAPH_OUTPUT_REVIEW.md`) 24개 항목을 모두 반영하고 테스트 47개, fixture·live 경로 실행, 깨끗한 환경 설치로 검증한다. 항목별 처리는 검토 문서 7절, 변경 내역은 이력 문서 2차 절에 기록했다.

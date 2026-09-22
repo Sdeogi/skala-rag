@@ -1,91 +1,119 @@
-"""Deterministic rubric and evidence reference checks.
+"""Deterministic rubric and evidence reference checks (design D.4).
 
-Semantic entailment can be supplied by the evaluation branch through a callback.
+Rule checks: every rubric item exists for both technologies, labels come from
+the defined sets, evidence IDs exist, refer to the right technology and to a
+known source, and are not ``unverified``. Semantic support is judged by the
+review LLM supplied as ``semantic_review`` (``agents.review.LLMSemanticReviewer``
+by default in live mode); C branch may inject its own reviewer.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from .schemas import FIELD_TITLES, LABELS, PERSPECTIVE_TITLES, is_valid_label
 from .state import GraphState
 
-
-RUBRICS: dict[str, dict[str, set[str] | None]] = {
-    "market": {
-        "market_size": {"직접 자료 있음", "관련 시장 자료만 있음", "미확인"},
-        "adoption": {"상용 서비스 적용 확인", "주류 프레임워크 통합", "연구 재현 수준", "미확인"},
-        "ecosystem": {"활발", "일부 있음", "미확인"},
-    },
-    "stakeholder": {
-        "competitor_view": {"지지", "우려", "중립", "미확인"},
-        "adopter_view": {"지지", "우려", "중립", "미확인"},
-        "investor_view": {"지지", "우려", "중립", "미확인"},
-    },
-    "domain": {
-        "memory": {"적용 가능 보고", "조건부 보고", "보고 없음"},
-        "quality": {"적용 가능 보고", "조건부 보고", "보고 없음"},
-        "latency": {"적용 가능 보고", "조건부 보고", "보고 없음"},
-        "throughput": {"적용 가능 보고", "조건부 보고", "보고 없음"},
-        "integration": {"낮음 보고", "높음 보고", "보고 없음"},
-    },
-    "trl": {"trl": None},
-}
+RUBRICS = LABELS
 
 SemanticReview = Callable[[str, str, str, Mapping[str, Any], list[Mapping[str, Any]]], bool]
 
 
+class ReviewBudgetExceeded(RuntimeError):
+    """Raised by a reviewer when its call budget is exhausted; treated as a warning."""
+
+
 def check_evidence(state: GraphState, semantic_review: SemanticReview | None = None) -> dict[str, Any]:
-    evidence = state.get("evidence", {})
-    missing: list[dict[str, str]] = []
-    checks: list[dict[str, Any]] = []
+    evidence = state.get("evidence") or {}
+    sources = state.get("sources") or {}
     technologies = state["run_config"]["technologies"]
+    missing: list[dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
+    review_errors = 0
+    review_skipped = 0
     for perspective, fields in RUBRICS.items():
         result = state.get(f"{perspective}_analysis") or {}
-        by_technology = result.get("technologies", {})
+        by_technology = result.get("technologies") or {}
         for technology in technologies:
-            judgments = by_technology.get(technology, {})
-            for field, allowed in fields.items():
+            judgments = by_technology.get(technology) or {}
+            for field in fields:
                 judgment = judgments.get(field)
                 problems: list[str] = []
+                warnings: list[str] = []
                 if not isinstance(judgment, Mapping):
                     problems.append("missing_item")
                     judgment = {}
-                label = judgment.get("label", "")
-                if allowed is None:
-                    if not (re.fullmatch(r"TRL\s*[1-9](?:\s*(?:-|~|에서)\s*(?:TRL\s*)?[1-9])?", str(label)) or label == "미확인"):
-                        problems.append("invalid_label")
-                elif label not in allowed:
+                label = str(judgment.get("label", "") or "").strip()
+                if not is_valid_label(perspective, field, label):
                     problems.append("invalid_label")
-                ids = judgment.get("evidence_ids", [])
+                ids = judgment.get("evidence_ids") or []
                 if not isinstance(ids, list) or not ids:
                     problems.append("missing_evidence")
                     ids = []
-                valid = []
+                valid: list[Mapping[str, Any]] = []
                 for identifier in ids:
                     item = evidence.get(identifier)
                     if item is None:
                         problems.append("unknown_evidence")
                     elif item.get("technology") not in (None, technology):
                         problems.append("wrong_technology")
-                    elif item.get("source_id") not in state.get("sources", {}):
+                    elif item.get("source_id") not in sources:
                         problems.append("unknown_source")
                     elif item.get("claim_type") == "unverified":
                         problems.append("unverified_evidence")
                     else:
                         valid.append(item)
-                if valid and semantic_review is not None:
+                if valid and semantic_review is not None and not problems:
                     try:
-                        if not semantic_review(perspective, technology, field, judgment, valid):
-                            problems.append("unsupported_claim")
+                        supported = semantic_review(perspective, technology, field, judgment, valid)
+                    except ReviewBudgetExceeded:
+                        warnings.append("semantic_review_skipped")
+                        review_skipped += 1
                     except Exception:
-                        problems.append("semantic_review_error")
+                        warnings.append("semantic_review_error")
+                        review_errors += 1
+                    else:
+                        if not supported:
+                            problems.append("unsupported_claim")
                 passed = not problems
-                checks.append({"perspective": perspective, "technology": technology, "field": field, "passed": passed, "reasons": sorted(set(problems))})
+                reasons = sorted(set(problems))
+                checks.append(
+                    {
+                        "perspective": perspective,
+                        "technology": technology,
+                        "field": field,
+                        "passed": passed,
+                        "reasons": reasons,
+                        "warnings": sorted(set(warnings)),
+                    }
+                )
                 if not passed:
-                    missing.append({"perspective": perspective, "technology": technology, "field": field, "question": f"{technology}의 {perspective}/{field} 판정을 뒷받침하는 원문 근거는 무엇인가?"})
+                    missing.append(
+                        {
+                            "perspective": perspective,
+                            "technology": technology,
+                            "field": field,
+                            "question": (
+                                f"{technology}의 {PERSPECTIVE_TITLES[perspective]} 관점 "
+                                f"'{FIELD_TITLES[field]}' 판정을 뒷받침하는 원문 근거는 무엇인가?"
+                            ),
+                            "reasons": reasons,
+                        }
+                    )
+    events: list[dict[str, Any]] = []
+    drain = getattr(semantic_review, "drain_metrics", None)
+    if callable(drain):
+        events = list(drain())
     return {
-        "evidence_check": {"passed": not missing, "items": checks, "semantic_review_enabled": semantic_review is not None},
+        "evidence_check": {
+            "passed": not missing,
+            "items": checks,
+            "semantic_review_enabled": semantic_review is not None,
+            "semantic_review_errors": review_errors,
+            "semantic_review_skipped": review_skipped,
+            "semantic_review_calls": getattr(semantic_review, "calls", None),
+        },
         "missing_questions": missing,
+        "metrics": events,
     }

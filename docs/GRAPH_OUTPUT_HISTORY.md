@@ -46,3 +46,36 @@ python app.py --mode replay --fixture --output-dir /tmp/skala-rag-graph-output-s
 - 의미 검토 LLM이 미연결이면 규칙 검증만 수행한다. manifest에 이 사실이 표시된다.
 - PDF는 현재 텍스트 중심 A4 보고서다. 실제 데이터에 복잡한 표가 들어오면 통합 단계에서 레이아웃 검수가 필요하다.
 - 모델 API 키가 없어 live 모드의 실제 LLM 호출은 실행하지 않았다. LLM 에이전트의 입력/출력 경계와 fallback은 fake 모델 테스트로 검증했다.
+
+## 2026-09-22 2차: 검토 결과 반영
+
+[GRAPH_OUTPUT_REVIEW.md](GRAPH_OUTPUT_REVIEW.md)의 상 6건, 중 10건, 하 8건을 모두 반영했다. 항목별 처리는 검토 문서 7절에 있다. 주요 변경:
+
+1. `graph/schemas.py` 신설: 공유 Pydantic 계약과 라벨 집합, 노드 경계 검증(`validate_update`).
+2. `graph/state.py`: `merge_by_id`가 충돌 시 최초 값을 유지하고 `conflicts`를 기록. `metrics`는 이벤트 리스트로 변경하고 집계 함수 추가.
+3. `graph/evidence_check.py`: `판단 유보` 허용, `missing_questions`에 이유 포함, 검토 LLM 경고 처리, 검토 metrics 수집.
+4. `agents/review.py` 신설: 검토 LLM(캐시, 예산, 토큰 기록). `app.py`가 live에서 기본 연결.
+5. `agents/synthesis.py`: 판정 이유·조건 기반 문장, 관련 항목 조합 확장. `agents/llm_output.py`: 쌍별 이유·불확실성 작성, keep/순서, 쌍 단위 검증과 fallback, SUMMARY 가드 정규식 통일, fallback 사유·토큰 기록.
+6. `agents/report.py`: 과제 참고 목차, 정적 장(`report_static.py`), 표, REFERENCE 형식, TRL 고지·단계 상세, 규칙 기반 SUMMARY, 인용 길이 제한, 조사 처리(`korean.py`), TTF 임베드, `--report-name`, manifest 확장.
+7. `graph/workflow.py`: path_map 명시, fan_out 노드 제거, 관점별 `Send` 보완, `retry` 선택형, 200페이지 상한, `GraphBubbleUp` 재전파, 실행 시간 metrics, `draw_mermaid`.
+8. `config.py`, `app.py`: `.env` 자동 로드, 설정 검증 분리, CLI 옵션(기술명·도메인·기준일·예산·검토 LLM·보고서 이름·도식), `stream(values)`로 마지막 State 보존.
+9. `pyproject.toml`: `graph` 의존성 그룹, hatchling build-system. `uv lock` 재생성. `.env.template`에 `RAG_PDF_FONT`.
+10. 테스트 47개(`tests/conftest.py` 공용 fixture), README를 과제 샘플 형식으로 재작성, `docs/graph.mmd` 추가.
+
+재현 명령:
+
+```bash
+cd '/Users/kunwoo/Desktop/workspace/0918_RAG_Pipeline_설계_및_구현/skala-rag'
+uv sync --only-group graph --only-group dev
+.venv/bin/python -m pytest -q                                   # 47 passed
+.venv/bin/python app.py --mode replay --fixture --output-dir outputs/demo --report-name RAG-Output_test
+.venv/bin/python app.py --draw-graph docs/graph.mmd
+```
+
+검증 결과: 테스트 47개 통과, 깨끗한 환경(`UV_PROJECT_ENVIRONMENT`)에서 52개 패키지 설치 후 동일 결과, fixture 보고서 7쪽 PDF에 AppleGothic 서브셋 임베드(`pdffonts` emb=yes), OpenAI API로 `gpt-5.4-mini` 존재와 구조화 출력 호출 성공 확인. live 경로(검토 LLM·종합 LLM·SUMMARY LLM) 실행 결과는 검토 문서 7절 참고.
+
+## 현재 상태 (2차 이후)
+
+- 작업 트리에 변경 사항이 있으며 커밋·푸시는 하지 않았다. 원격 `feat/graph-output`은 아직 `6612864`다.
+- 팀 서비스 미합병. 실제 논문·웹 근거의 끝단 실행은 A/B/C 연결 후 가능하다.
+- 남은 팀 결정: 기본 의존성 목록 정리(합병 시), C의 검토 LLM 교체 여부, README Contributors·검색 지표.

@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from skala-rag!")
+"""Vector store and indexing modules (A branch)."""

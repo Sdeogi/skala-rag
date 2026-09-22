@@ -6228,7 +6228,7 @@ wheels = [
 [[package]]
 name = "skala-10-team6"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
     { name = "faiss-cpu" },
@@ -6271,6 +6271,15 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+]
+graph = [
+    { name = "jinja2" },
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
+    { name = "langgraph" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "reportlab" },
 ]
 
 [package.metadata]
@@ -6315,6 +6324,15 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0.0" }]
+graph = [
+    { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "langchain-core", specifier = ">=1.0.0" },
+    { name = "langchain-openai", specifier = ">=1.0.1" },
+    { name = "langgraph", specifier = ">=1.0.1" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "reportlab", specifier = ">=4.0.0" },
+]
 
 [[package]]
 name = "sniffio"
