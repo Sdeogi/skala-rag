@@ -1,0 +1,34 @@
+{
+  "papers": [
+    {
+      "source_id": "KIVI",
+      "tech_name": "KIVI",
+      "filename": "kivi.pdf",
+      "title": "KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache",
+      "authors": "Zirui Liu, Jiayi Yuan, Hongye Jin, Shaochen (Henry) Zhong, Zhaozhuo Xu, Vladimir Braverman, Beidi Chen, Xia Hu",
+      "venue": "ICML 2024",
+      "source_url": "https://arxiv.org/abs/2402.02750",
+      "version": "v2",
+      "published_date": "2024-07-25",
+      "collected_at": "2026-09-22",
+      "page_count": 15,
+      "sha256": "df31ef32d71bfb280c533c5db8220cadf5ef42076bf45d82ba4c8da8e50ea5f4",
+      "source_type": "arxiv_paper"
+    },
+    {
+      "source_id": "InfiniGen",
+      "tech_name": "InfiniGen",
+      "filename": "infinigen.pdf",
+      "title": "InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic KV Cache Management",
+      "authors": "Wonbeom Lee, Jungi Lee, Junghwan Seo, Jaewoong Sim",
+      "venue": "OSDI 2024",
+      "source_url": "https://arxiv.org/abs/2406.19707",
+      "version": "v1",
+      "published_date": "2024-06-28",
+      "collected_at": "2026-09-22",
+      "page_count": 18,
+      "sha256": "267d689a1ded953f076eb93976c0ebeac1ad02029f1f7c9dd1c947aa05d7cb5f",
+      "source_type": "arxiv_paper"
+    }
+  ]
+}

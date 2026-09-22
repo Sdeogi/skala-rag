@@ -31,8 +31,8 @@
 - Framework : LangGraph 1.x
 - LLM/Generator : gpt-5.4-mini (`RAG_MODEL_ID`로 변경)
 - LLM/Judge : gpt-5.4-mini (생성과 다른 프롬프트, 별도 호출)
-- Retrieval : FAISS - Hit Rate@5, MRR@5 (A 브랜치 합병 시 기재)
-- Embedding : intfloat/multilingual-e5-small (A 브랜치)
+- Retrieval : FAISS - Hit Rate@5 65%, MRR@5 0.403 (라벨링 질의 20개, `evaluation/retrieval/report.md`)
+- Embedding : intfloat/multilingual-e5-small (sentence-transformers)
 
 ## Agents
 
@@ -44,6 +44,22 @@
 - 근거 검사 노드 + 검토 LLM (D): 규칙 검사와 의미 검토, 부족한 질문 생성 → `evidence_check`, `missing_questions`
 - 평가 종합 에이전트 (D): 일치·상충 쌍과 조건·불확실성 → `synthesis`
 - 보고서 생성 에이전트 (D): 한국어 보고서와 인용 → `report`, 산출물 5종
+
+## Paper RAG — 논문 검색 (KIVI / InfiniGen)
+
+PDF 파싱 → Chunk → Embedding(`intfloat/multilingual-e5-small`) → FAISS 색인 → `retrieve_papers`
+검색 도구로 구성된다. 자세한 내용은 `src/skala_rag/tools/retrieve/`, `src/skala_rag/agents/technical/`,
+`src/skala_rag/evaluation/retrieval/` 참고.
+
+**검색 지표** (라벨링된 질의 20개, KIVI/InfiniGen 각 10개 기준, 설계서 E.3):
+
+| 지표 | 값 |
+|---|---|
+| Hit Rate@5 | 65% |
+| MRR@5 | 0.403 |
+
+측정 방법과 문항별 결과는 `evaluation/retrieval/report.md` 참고. 재측정하려면
+`python scripts/run_retrieval_eval.py` 실행(사전에 `python scripts/build_index.py`로 색인 필요).
 
 ## Architecture
 
@@ -96,28 +112,44 @@ graph TD;
 ## Directory Structure
 
 ```
-├── app.py                        # 실행 스크립트 (live/replay, --fixture, --draw-graph)
+├── app.py                        # 실행 스크립트 (live/replay, --fixture, --draw-graph)  [D]
+├── scripts/                      # build_index.py, run_retrieval_eval.py, run_technical_agent.py  [A]
+├── data/papers/                  # 논문 PDF와 manifest  [A]
+├── data/web/                     # 웹 검색·원문 캐시 (replay용, git 제외)  [B]
+├── indexes/                      # FAISS 색인  [A]
+├── evaluation/retrieval/         # 검색 지표 측정 결과  [A]
 ├── src/skala_rag/
-│   ├── config.py                 # 환경 변수 설정과 검증
-│   ├── graph/
-│   │   ├── schemas.py            # 공유 Pydantic 계약 (RunConfig, Source, Evidence, PerspectiveResult, ...)
-│   │   ├── state.py              # GraphState, ID 병합 reducer, metrics 이벤트
-│   │   ├── evidence_check.py     # 규칙 검사 + 검토 LLM 호출
-│   │   ├── workflow.py           # PipelineServices, 그래프 구성, 보완 Send
-│   │   └── demo.py               # 합성 fixture (흐름 검증 전용)
+│   ├── config.py                 # 환경 변수 설정과 검증  [D]
+│   ├── schemas/state.py          # 팀 공용 Pydantic 스키마  [C]
+│   ├── evidence_check.py         # 근거 검사 노드(기계 검사 + LLM 검토)  [C]
+│   ├── supplement.py             # 보완 노드(도메인·TRL 재판정)  [C]
+│   ├── prompts/                  # 도메인·TRL Rubric 프롬프트  [C]
+│   ├── tools/
+│   │   ├── retrieve/             # PDF 파싱, 청크, 임베딩, FAISS 검색  [A]
+│   │   └── web.py                # Tavily 검색, 원문 조회, 요약, 캐시  [B]
 │   ├── agents/
-│   │   ├── review.py             # 검토 LLM (근거 의미 검토, 캐시·예산)
-│   │   ├── synthesis.py          # 규칙 기반 일치·상충 쌍
-│   │   ├── llm_output.py         # live 종합·SUMMARY LLM 에이전트와 출력 가드
-│   │   ├── report.py             # 보고서 장 구성, Markdown/HTML/PDF, manifest
-│   │   └── report_static.py      # 분석 배경·기술 선정 정적 장
-│   └── templates/report.html.j2  # HTML 템플릿
-├── tests/                        # 47개 테스트
-├── docs/                         # 설계·이력·검토 문서, graph.mmd
+│   │   ├── technical/            # 기술 조사 에이전트  [A]
+│   │   ├── market.py, stakeholder.py   # 시장성·이해관계자 근거 수집  [B]
+│   │   ├── domain.py, trl.py     # 도메인·TRL 평가 에이전트  [C]
+│   │   ├── review.py             # 검토 LLM(근거 의미 검토, 캐시·예산)  [D]
+│   │   ├── synthesis.py          # 규칙 기반 일치·상충 쌍  [D]
+│   │   ├── llm_output.py         # live 종합·SUMMARY LLM 에이전트와 출력 가드  [D]
+│   │   └── report.py, report_static.py   # 보고서 장 구성, Markdown/HTML/PDF, manifest  [D]
+│   ├── graph/
+│   │   ├── schemas.py            # 그래프 경계 계약(RunConfig, Source, Evidence, PerspectiveResult 등)  [D]
+│   │   ├── state.py              # GraphState, ID 병합 reducer, metrics 이벤트  [D]
+│   │   ├── evidence_check.py     # 규칙 검사 + 검토 LLM 호출  [D]
+│   │   ├── workflow.py           # PipelineServices, 그래프 구성, 보완 Send  [D]
+│   │   └── demo.py               # 합성 fixture (흐름 검증 전용)  [D]
+│   ├── evaluation/retrieval/     # Hit Rate@K, MRR 측정 코드  [A]
+│   └── templates/report.html.j2  # HTML 템플릿  [D]
+├── tests/                        # D 47개 + A 테스트(tools/retrieve, agents/technical, evaluation)
+├── docs/                         # D 설계·이력·검토 문서, graph.mmd, PAPER_RAG_HANDOFF.md
+├── HANDOFF.md                    # C 인수인계 문서
 └── outputs/                      # 보고서·출처 목록·실행 기록 (git 제외)
 ```
 
-A/B/C 합병 후에는 설계 E.2의 `data/`, `indexes/`, `tools/`, `prompts/`, `evaluation/`이 추가된다.
+통합 상태: A/B/C 모듈은 main에 합쳐졌고, D 그래프와의 연결(어댑터)은 진행 중이다. 현재 D 그래프는 `--fixture` 또는 `--services module:factory`로 실행한다.
 
 ## Usage
 

@@ -1,3 +1,10 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skala_rag"]
+
 [project]
 name = "skala-10-team6"
 version = "0.1.0"
@@ -26,7 +33,6 @@ dependencies = [
     "openpyxl>=3.1.5",
     "pandas>=2.3.3",
     "pypdf>=6.0.0",
-    "pdfplumber>=0.11.8",
     "psycopg2>=2.9.11",
     "psycopg[binary,pool]>=3.2.12",
     "python-docx>=1.2.0",
@@ -39,12 +45,15 @@ dependencies = [
     "yfinance>=0.2.66",
     "ragas>=0.4.3",
     "langgraph-swarm>=0.1.0",
+    "pymupdf>=1.28.2",
     "jinja2>=3.1.0",
     "reportlab>=4.0.0",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0.0"]
+dev = [
+    "pytest>=9.1.1",
+]
 # Minimal runtime of the graph/output branch (D). Install with:
 #   uv sync --only-group graph --only-group dev
 # The full team environment (A/B/C tooling included) is `uv sync --group dev`.
@@ -57,13 +66,6 @@ graph = [
     "reportlab>=4.0.0",
     "python-dotenv>=1.2.1",
 ]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/skala_rag"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

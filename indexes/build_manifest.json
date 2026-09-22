@@ -1,0 +1,12 @@
+{
+  "embedding_model": "intfloat/multilingual-e5-small",
+  "chunk_size_tokens": 350,
+  "chunk_overlap_tokens": 50,
+  "num_chunks": 133,
+  "num_papers": 2,
+  "tech_names": [
+    "InfiniGen",
+    "KIVI"
+  ],
+  "built_at": "2026-09-22T02:47:49.411433+00:00"
+}

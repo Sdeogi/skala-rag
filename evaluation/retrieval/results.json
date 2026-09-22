@@ -1,0 +1,379 @@
+{
+  "k": 5,
+  "hit_rate_at_k": 0.65,
+  "mrr_at_k": 0.4033333333333333,
+  "results": [
+    {
+      "id": "kivi-01",
+      "tech_name": "KIVI",
+      "category": "principle",
+      "query": "KIVI는 Key 캐시와 Value 캐시를 각각 어떤 축으로 양자화하는가?",
+      "expected_evidence_ids": [
+        "KIVI-p4-1",
+        "KIVI-p5-2",
+        "KIVI-p9-4"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p6-0",
+        "KIVI-p9-4",
+        "KIVI-p4-0",
+        "KIVI-p2-1",
+        "KIVI-p10-0"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "id": "kivi-02",
+      "tech_name": "KIVI",
+      "category": "principle",
+      "query": "KIVI가 KV 캐시를 몇 비트로 압축하는가?",
+      "expected_evidence_ids": [
+        "KIVI-p1-0",
+        "KIVI-p1-1",
+        "KIVI-p1-2"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p8-1",
+        "KIVI-p6-5",
+        "KIVI-p1-0",
+        "KIVI-p9-4",
+        "KIVI-p14-1"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "id": "kivi-03",
+      "tech_name": "KIVI",
+      "category": "experimental_setup",
+      "query": "KIVI 실험에 사용된 모델은 어떤 것들인가?",
+      "expected_evidence_ids": [
+        "KIVI-p6-1"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p10-0",
+        "KIVI-p8-1",
+        "KIVI-p9-1",
+        "KIVI-p14-1",
+        "KIVI-p6-1"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "id": "kivi-04",
+      "tech_name": "KIVI",
+      "category": "experimental_setup",
+      "query": "KIVI 성능 평가에 사용된 벤치마크나 태스크는 무엇인가?",
+      "expected_evidence_ids": [
+        "KIVI-p6-2",
+        "KIVI-p6-4"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p6-4",
+        "KIVI-p6-1",
+        "KIVI-p8-1",
+        "KIVI-p14-0",
+        "KIVI-p8-2"
+      ],
+      "hit": true,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "kivi-05",
+      "tech_name": "KIVI",
+      "category": "performance",
+      "query": "KIVI를 적용하면 메모리 사용량과 처리량(throughput)이 얼마나 개선되는가?",
+      "expected_evidence_ids": [
+        "KIVI-p8-2"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p8-2",
+        "KIVI-p8-1",
+        "KIVI-p13-2",
+        "KIVI-p10-0",
+        "KIVI-p14-0"
+      ],
+      "hit": true,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "kivi-06",
+      "tech_name": "KIVI",
+      "category": "performance",
+      "query": "KIVI의 정확도는 16비트 대비 얼마나 저하되는가?",
+      "expected_evidence_ids": [
+        "KIVI-p6-4"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p8-1",
+        "KIVI-p14-1",
+        "KIVI-p13-2",
+        "KIVI-p8-2",
+        "KIVI-p14-0"
+      ],
+      "hit": false,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "id": "kivi-07",
+      "tech_name": "KIVI",
+      "category": "limitations",
+      "query": "KIVI에서 residual length나 group size 같은 하이퍼파라미터가 성능에 미치는 영향은?",
+      "expected_evidence_ids": [
+        "KIVI-p7-2",
+        "KIVI-p9-2"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p7-2",
+        "KIVI-p13-2",
+        "KIVI-p9-1",
+        "KIVI-p8-2",
+        "KIVI-p14-3"
+      ],
+      "hit": true,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "kivi-08",
+      "tech_name": "KIVI",
+      "category": "limitations",
+      "query": "KIVI는 어떤 종류의 태스크에서 평가하기 어려운가?",
+      "expected_evidence_ids": [
+        "KIVI-p6-2"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p8-1",
+        "KIVI-p14-1",
+        "KIVI-p10-0",
+        "KIVI-p15-0",
+        "KIVI-p6-0"
+      ],
+      "hit": false,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "id": "kivi-09",
+      "tech_name": "KIVI",
+      "category": "principle",
+      "query": "KIVI에서 residual cache(잔차 캐시)는 어떤 역할을 하는가?",
+      "expected_evidence_ids": [
+        "KIVI-p5-2",
+        "KIVI-p5-3"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p2-1",
+        "KIVI-p10-0",
+        "KIVI-p6-0",
+        "KIVI-p2-2",
+        "KIVI-p6-5"
+      ],
+      "hit": false,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "id": "kivi-10",
+      "tech_name": "KIVI",
+      "category": "experimental_setup",
+      "query": "KIVI의 효율성(지연시간) 평가는 어떤 방식으로 진행되었는가?",
+      "expected_evidence_ids": [
+        "KIVI-p7-3"
+      ],
+      "retrieved_evidence_ids": [
+        "KIVI-p7-3",
+        "KIVI-p8-1",
+        "KIVI-p14-1",
+        "KIVI-p9-0",
+        "KIVI-p10-0"
+      ],
+      "hit": true,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "id": "infinigen-01",
+      "tech_name": "InfiniGen",
+      "category": "principle",
+      "query": "InfiniGen은 어떤 방식으로 중요한 KV를 미리 예측하고 가져오는가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p6-3",
+        "InfiniGen-p6-4",
+        "InfiniGen-p1-4"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p2-1",
+        "InfiniGen-p1-4",
+        "InfiniGen-p6-2",
+        "InfiniGen-p2-0",
+        "InfiniGen-p9-0"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "id": "infinigen-02",
+      "tech_name": "InfiniGen",
+      "category": "principle",
+      "query": "InfiniGen이 중요한 토큰을 찾기 위해 사용하는 특이값 분해(SVD) 기법은 무엇인가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p3-2",
+        "InfiniGen-p3-3"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p9-0",
+        "InfiniGen-p8-1",
+        "InfiniGen-p12-3",
+        "InfiniGen-p2-1",
+        "InfiniGen-p14-3"
+      ],
+      "hit": false,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "id": "infinigen-03",
+      "tech_name": "InfiniGen",
+      "category": "experimental_setup",
+      "query": "InfiniGen 실험에 사용된 모델과 파라미터 크기는?",
+      "expected_evidence_ids": [
+        "InfiniGen-p9-3"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p12-3",
+        "InfiniGen-p2-1",
+        "InfiniGen-p9-3",
+        "InfiniGen-p9-0",
+        "InfiniGen-p10-3"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "id": "infinigen-04",
+      "tech_name": "InfiniGen",
+      "category": "experimental_setup",
+      "query": "InfiniGen의 비교 대상(baseline) 시스템은 무엇인가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p9-4"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p12-3",
+        "InfiniGen-p9-0",
+        "InfiniGen-p2-1",
+        "InfiniGen-p10-2",
+        "InfiniGen-p14-4"
+      ],
+      "hit": false,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "id": "infinigen-05",
+      "tech_name": "InfiniGen",
+      "category": "performance",
+      "query": "InfiniGen은 기존 방법 대비 몇 배의 속도 향상을 보이는가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p2-1"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p12-3",
+        "InfiniGen-p2-1",
+        "InfiniGen-p12-0",
+        "InfiniGen-p1-0",
+        "InfiniGen-p14-4"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "id": "infinigen-06",
+      "tech_name": "InfiniGen",
+      "category": "performance",
+      "query": "InfiniGen 적용 시 KV 캐시 사용량은 평균적으로 얼마나 줄어드는가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p9-4",
+        "InfiniGen-p9-5"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p12-3",
+        "InfiniGen-p2-1",
+        "InfiniGen-p10-2",
+        "InfiniGen-p1-4",
+        "InfiniGen-p2-0"
+      ],
+      "hit": false,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "id": "infinigen-07",
+      "tech_name": "InfiniGen",
+      "category": "limitations",
+      "query": "InfiniGen의 prefetching으로 인한 오버헤드는 무엇인가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p13-1"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p9-0",
+        "InfiniGen-p6-2",
+        "InfiniGen-p2-1",
+        "InfiniGen-p8-1",
+        "InfiniGen-p13-1"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "id": "infinigen-08",
+      "tech_name": "InfiniGen",
+      "category": "limitations",
+      "query": "InfiniGen이 부분 가중치(partial weight)를 압축할 수 있는 한계는 무엇인가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p13-2"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p2-1",
+        "InfiniGen-p9-0",
+        "InfiniGen-p12-3",
+        "InfiniGen-p2-0",
+        "InfiniGen-p13-1"
+      ],
+      "hit": false,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "id": "infinigen-09",
+      "tech_name": "InfiniGen",
+      "category": "principle",
+      "query": "InfiniGen은 KV 캐시를 어디에 저장하고 필요한 것만 어떻게 가져오는가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p1-3",
+        "InfiniGen-p1-4"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p6-2",
+        "InfiniGen-p1-4",
+        "InfiniGen-p2-1",
+        "InfiniGen-p2-0",
+        "InfiniGen-p6-3"
+      ],
+      "hit": true,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "id": "infinigen-10",
+      "tech_name": "InfiniGen",
+      "category": "performance",
+      "query": "긴 문맥(long context)에서 InfiniGen의 perplexity 성능은 어떠한가?",
+      "expected_evidence_ids": [
+        "InfiniGen-p13-4"
+      ],
+      "retrieved_evidence_ids": [
+        "InfiniGen-p13-4",
+        "InfiniGen-p11-3",
+        "InfiniGen-p9-0",
+        "InfiniGen-p10-0",
+        "InfiniGen-p9-4"
+      ],
+      "hit": true,
+      "reciprocal_rank": 1.0
+    }
+  ]
+}

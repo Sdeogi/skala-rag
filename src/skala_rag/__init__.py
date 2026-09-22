@@ -1,3 +1,3 @@
-"""skala_rag: LangGraph multi-agent, multi-perspective evaluation of KV cache techniques."""
+"""skala-rag: KV cache 최적화 기술(KIVI, InfiniGen) 다관점 평가 RAG 파이프라인."""
 
 __version__ = "0.1.0"
