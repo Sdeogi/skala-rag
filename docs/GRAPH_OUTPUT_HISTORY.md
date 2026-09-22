@@ -79,3 +79,26 @@ uv sync --only-group graph --only-group dev
 - 작업 트리에 변경 사항이 있으며 커밋·푸시는 하지 않았다. 원격 `feat/graph-output`은 아직 `6612864`다.
 - 팀 서비스 미합병. 실제 논문·웹 근거의 끝단 실행은 A/B/C 연결 후 가능하다.
 - 남은 팀 결정: 기본 의존성 목록 정리(합병 시), C의 검토 LLM 교체 여부, README Contributors·검색 지표.
+
+## 2026-09-22 3차: main 병합과 통합 계획
+
+`origin/main`(A/B/C 22개 커밋, PR #2까지 병합됨)을 `feat/graph-output`에 병합했다(커밋 `b68d1b2`). 충돌 8개는 모두 환경설정 파일이었다: `.gitignore`(합집합), `README.md`(과제 형식 유지 + main의 Paper RAG 절·검색 지표·전체 디렉토리 구조 반영), `pyproject.toml`(main 배치 + jinja2/reportlab + `graph` 그룹), `uv.lock`(main 것 받은 뒤 `uv lock`), 패키지 `__init__` 2개(docstring 병합), `config.py`(D 구현 유지), `database/`(main대로 삭제). 경로가 겹치는 소스 모듈은 없다.
+
+### main에 올라온 A/B/C 계약 (통합 어댑터 작성 시 기준)
+
+| 브랜치 | 진입점 | 반환·형식 | D 계약과의 차이 |
+| --- | --- | --- | --- |
+| A | `agents/technical.technical_research_node(state)` | `technical_findings{tech: {principle: {claims, evidence_ids}, experimental_setup, performance, limitations}}`, `evidence{id: {tech_name, page, section, claim, quote, claim_type, experimental_condition}}`, `errors` 리스트. `run_config.tech_names`를 읽음 | Evidence는 `technology`, `location`, `conditions`로, findings는 `TechFinding(principle 문자열, measurements, limitations)`로, errors는 dict로 변환 필요. `run_config.technologies`도 함께 넣어야 함 |
+| A | `tools.retrieve.retrieve_papers(query, tech_name, k, query_en)` | `RetrievedChunk(evidence_id, source_id, tech_name, page, section, text)` | C의 평가기는 `.evidence_id`를 가진 Evidence 객체를 기대하므로 A→C 변환도 필요 |
+| B | `agents.market.collect_market_evidence(technology, topics, mode, ...)`, `agents.stakeholder.collect_stakeholder_evidence(technology, mode)` | 기술별 근거 수집 결과(`evidence` 리스트, `indirect_evidence`, `errors`, `searches`). **판정 라벨(PerspectiveResult)은 아직 없음** | 시장성·이해관계자 판정 단계(라벨·이유·근거 ID)를 B 또는 공동으로 추가해야 `market_analysis`, `stakeholder_analysis`가 채워짐 |
+| B | `tools.web.get_search_results/get_source/summarize_source(mode)` | live 저장·replay 재생 캐시 `data/web/` | 예산은 `run_config.budget`에서 읽도록 연결 |
+| C | `agents.domain.make_domain_evaluator(retriever)`, `agents.trl.make_trl_evaluator(retriever, web_search)` | `{"domain_analysis": PerspectiveResult(items=[RubricItem(item_key, tech, verdict, reason, evidence_ids, conditions)]), "evidence": {...}}` | D 형식 `technologies{tech: {field: Judgment(label, ...)}}`로 변환. `trl_level`→`trl`, `verdict`→`label`, Evidence `tech`→`technology` |
+| C | `evidence_check.evidence_check(state, model_name)`, `supplement.make_supplement_node(retriever, web_search)` | C 스키마(`schemas/state.py`)의 State 객체를 전제. 보완은 도메인·TRL만 | D 그래프는 `graph/evidence_check.py`와 관점별 Send 보완을 사용. C의 `llm_review_item`은 `semantic_review`로, `make_supplement_node`는 `services.retry`로 감쌀 수 있음 |
+| C | `schemas/state.py` | 팀 공용 Pydantic 스키마(C 소유 선언), State 채널에 Pydantic 객체 | D의 `graph/schemas.py`는 dict 기반 경계 계약. 둘 중 하나로 수렴하거나 어댑터를 한 곳(`integration/services.py`)에 둔다 |
+
+### 다음 작업 (통합 단계)
+
+1. `src/skala_rag/integration/services.py`에 `create_services()`를 만들고 위 변환을 한 곳에 모은다. `prepare`는 `data/papers/manifest.json`으로 Source(paper, pages)를 등록하고 색인 존재를 확인한다.
+2. 시장성·이해관계자 판정 단계를 정한다(B의 수집 결과에 C의 `judge_one` 방식 적용 또는 B가 구현).
+3. `python app.py --mode replay --services skala_rag.integration.services:create_services`로 끝단 실행을 검증한다.
+4. C의 `schemas/state.py`와 D의 `graph/schemas.py`를 하나로 수렴할지 팀이 결정한다.
