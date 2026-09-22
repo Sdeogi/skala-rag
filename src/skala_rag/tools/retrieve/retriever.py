@@ -13,7 +13,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from langchain_community.vectorstores import FAISS
-from langchain_core.tools import tool
 
 from .embeddings import E5Embeddings
 from .ingest import DEFAULT_INDEX_DIR
@@ -81,26 +80,3 @@ def retrieve_papers(
     if not results and query_en:
         results = _search(query_en, tech_name, index_dir)
     return results[:k]
-
-
-@tool
-def retrieve_papers_tool(query: str, tech_name: str, k: int = DEFAULT_TOP_K) -> list[dict]:
-    """두 기술(KIVI, InfiniGen) 논문에서 질의와 관련된 근거 청크를 검색한다.
-
-    Args:
-        query: 검색할 질문(한국어 또는 영어).
-        tech_name: "KIVI" 또는 "InfiniGen".
-        k: 반환할 최대 청크 수(기본 5).
-    """
-    chunks = retrieve_papers(query, tech_name, k=k)
-    return [
-        {
-            "evidence_id": c.evidence_id,
-            "source_id": c.source_id,
-            "tech_name": c.tech_name,
-            "page": c.page,
-            "section": c.section,
-            "text": c.text,
-        }
-        for c in chunks
-    ]
