@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from skala-rag!")
+"""논문 검색, 웹 검색 등 에이전트가 호출하는 도구 모음."""
