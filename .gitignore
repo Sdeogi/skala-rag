@@ -9,6 +9,10 @@ venv/
 .env.*
 !.env.template
 
-# OS / Editor 
+# OS / Editor
 .DS_Store
 .vscode/
+
+# Local dev-only notebooks (개인 개발/검증용, HANDOFF.md에 내용 문서화됨)
+notebooks/
+.ipynb_checkpoints/
