@@ -7,11 +7,32 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from langchain_tavily import TavilyExtract, TavilySearch
 
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+from pydantic import BaseModel, Field
+
 
 load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "web"
+
+
+class WebEvidenceSummary(BaseModel):
+    """웹 원문에서 추출한 근거 요약."""
+
+    claim: str = Field(
+        description="질문과 관련하여 출처가 직접 주장하거나 보고하는 핵심 내용"
+    )
+    quote: str = Field(
+        description="claim을 직접 뒷받침하는 원문의 짧은 근거 구절"
+    )
+    location: str = Field(
+        description="근거가 있는 위치. 섹션 제목이나 문단 위치"
+    )
+    limitation: str = Field(
+        description="이 근거를 해석할 때의 조건이나 한계. 없으면 빈 문자열"
+    )
 
 
 def search_web(
@@ -145,3 +166,55 @@ def get_source(
     raise ValueError(
         f"지원하지 않는 mode입니다: {mode}"
     )
+
+
+def summarize_source(
+    source: dict[str, Any],
+    question: str,
+) -> dict[str, Any]:
+    """웹 원문에서 질문과 관련된 근거를 구조화한다."""
+
+    raw_content = source.get("raw_content", "")
+
+    if not raw_content:
+        raise ValueError("source에 raw_content가 없습니다.")
+
+    model = init_chat_model(
+        "gpt-5.4-mini",
+        model_provider="openai",
+    )
+
+    agent = create_agent(
+        model=model,
+        tools=[],
+        response_format=WebEvidenceSummary,
+        system_prompt=(
+            "당신은 웹 원문에서 검증 가능한 근거만 추출하는 분석기입니다. "
+            "반드시 제공된 원문에 직접 근거해서 답하세요. "
+            "원문에 없는 내용을 추론하거나 보완하지 마세요. "
+            "quote는 claim을 실제로 뒷받침하는 원문 구절이어야 합니다."
+        ),
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        f"질문:\n{question}\n\n"
+                        f"출처 URL:\n{source.get('url', '')}\n\n"
+                        f"원문:\n{raw_content}"
+                    ),
+                }
+            ]
+        }
+    )
+
+    summary = result["structured_response"]
+
+    return {
+        **summary.model_dump(),
+        "source_url": source.get("url", ""),
+        "source_title": source.get("title", ""),
+    }
