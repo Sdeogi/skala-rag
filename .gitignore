@@ -1,6 +1,7 @@
 # Python
 .python-version
 __pycache__/
+.pytest_cache/
 .venv/
 venv/
 
@@ -16,3 +17,7 @@ venv/
 # Local dev-only notebooks (개인 개발/검증용, HANDOFF.md에 내용 문서화됨)
 notebooks/
 .ipynb_checkpoints/
+
+# Generated web cache (B)
+data/web/*
+!data/web/.gitkeep
