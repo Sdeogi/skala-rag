@@ -17,7 +17,7 @@
 ## 구현 순서와 재현 명령
 
 1. 저장소를 처음에는 잘못된 현재 작업공간 `0818_0820_SpringAI/skala-rag`에 복제했으나, 사용자 확인 직후 전체 저장소를 위의 `0918.../skala-rag`로 이동했다. 현재 작업은 올바른 폴더에서 수행 중이다.
-2. `docs/GRAPH_OUTPUT_DESIGN.md`와 `docs/GRAPH_OUTPUT_PLAN.md`를 작성했다.
+2. `docs/GRAPH_OUTPUT_DESIGN.md`와 작업 계획서를 작성했다(계획서는 항목이 모두 완료되어 2026-09-22 정리 시 삭제, 내용은 이 문서에 통합).
 3. 테스트를 먼저 작성하고 import 실패를 확인한 뒤 State/reducer, 근거 검사, synthesis/report, workflow를 구현했다.
 4. 최초 LangGraph 컴파일에서 조건부 간선의 노드 목록 매핑이 허용되지 않아 `fan_out` 노드를 명시적으로 추가했다. 수정 후 병렬 합류 테스트가 통과했다.
 5. `app.py`, HTML 템플릿, PDF 저장과 fixture를 구현했다. `python app.py`가 설치 전에도 `src` 패키지를 찾게 했다.
@@ -165,3 +165,17 @@ live 실행 후 반영한 조치:
 3. 설계 B.6의 실행당 검색 20회·원문 30건 상한을 B 모듈이 강제하지 않는다. live 1회에 검색 34회, 원문 조회 시도 약 50회가 발생했다.
 4. C 도메인: `보고 없음` 판정에 근거 ID를 붙여 반환하는 경우가 있다. D는 미발견 라벨로 처리한다.
 5. 스키마 수렴: C `schemas/state.py`와 D `graph/schemas.py`는 어댑터로 연결된 상태이며 하나로 합칠지는 팀 결정.
+
+### InfiniGen 이해관계자 재수집 (2026-09-22)
+
+live 실행에서 InfiniGen 이해관계자 수집이 통째로 실패한 원인은 '도입 기업과 개발자' 축 첫 검색어(`"InfiniGen" "KV cache" implementation GitHub issue`)에 대한 Tavily 일시 오류였다. 같은 검색어를 다시 호출하자 정상 결과 3건이 돌아왔다. 전체 live 대신 `run_stakeholder_agent(("InfiniGen",), mode="live")`만 실행해 캐시를 채웠다(검색 9회, 원문 시도 20회, 캐시 150개). 결과는 '투자 업계와 미디어' 지지 1건이고, '경쟁 기술 진영'과 '도입 기업과 개발자'는 발언 주체가 확인되는 직접 근거가 없어 미확인으로 남는다(B 검색 범위 안에서의 미발견). 인용 구절 검증 실패 4건은 B 요약기가 원문에 없는 구절을 만든 경우다. 이후 `--mode replay --llm-output on --semantic-review on`으로 보고서를 다시 생성했다.
+재생성 결과(130초): InfiniGen 이해관계자는 수집 실패 없이 세 축이 판정됐고, '투자 업계와 미디어'의 지지 근거 1건은 검토 LLM이 "업계 일반의 KV cache offload 평가일 뿐 InfiniGen을 직접 지칭하지 않는다"는 사유로 거부해 결과적으로 세 축 모두 미확인이다(이번에는 검색 범위 안의 미발견). 종합 LLM 쌍 4개 중 3개 채택, 1개는 후보에 없는 근거 ID를 인용해 규칙 문장으로 대체됐다. SUMMARY LLM 통과. 근거 검사 통과 14/24.
+
+
+## 2026-09-22 5차: 저장소 정리 (`chore/cleanup`)
+
+- `data/papers/KIVI.pdf`, `data/papers/InfiniGen.pdf`를 git 인덱스에서 제거. 소문자 `kivi.pdf`, `infinigen.pdf`와 내용이 같고(manifest의 sha256과 일치) `manifest.json`이 소문자 이름을 참조한다. macOS APFS처럼 대소문자를 구분하지 않는 파일시스템에서는 두 이름이 같은 파일이라 git이 혼란을 일으킨다.
+- `docs/GRAPH_OUTPUT_PLAN.md` 삭제. 체크리스트가 모두 완료됐고 내용은 이 문서 1~4차 절에 있다.
+- 로컬 잔재 삭제(추적되지 않는 파일): `src/skala_rag/database/__pycache__`, `.DS_Store`, `__pycache__`, `.pytest_cache`.
+- 유지한 것: `indexes/`(재현용 FAISS 색인), `evaluation/retrieval/`(검색 지표 결과), `scripts/`, `HANDOFF.md`·`docs/PAPER_RAG_HANDOFF.md`(팀원 인수인계), `docs/GRAPH_OUTPUT_REVIEW.md`(검토·개선 기록).
+- 팀 결정 대상: C의 `src/skala_rag/evidence_check.py`, `src/skala_rag/supplement.py`는 통합 파이프라인에서 import되지 않는다(D의 `graph/evidence_check.py`와 관점별 보완이 그 역할을 맡음). 담당자가 동의하면 삭제하고 HANDOFF.md를 갱신한다.
