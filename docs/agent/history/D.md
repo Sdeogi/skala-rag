@@ -89,3 +89,46 @@
 - `_write_pdf`의 반환 값은 튜플이다. 글꼴만 받던 호출부를 되살리면 `save_outputs`가 깨진다
 
 **확인**: pytest 68 passed. 근거 60건·출처 20개 State: 수준 0에서 13쪽 → 수준 1에서 10쪽으로 확정. 근거 90건·출처 30개에 SUMMARY 1200자·오류 8건을 더한 경우: 수준 2에서 10쪽
+
+## 2026-10-07 14:09 · sup/report · deogi
+
+**무엇을**: 보고서 3장·5장·6장의 본문을 다시 구성하고, LLM이 5장 시사점도 쓰게 함. 종합 단계 LLM에는 긴 근거 ID 대신 짧은 별칭(E1, E2)을 줌
+
+**왜**:
+- 5장이 같은 틀의 문장으로 쌍을 나열해 "대상 도메인에서 무슨 의미인가"가 없었다. 쌍을 앞에서부터 자르면 첫 번째 기술(KIVI)의 쌍만 실려 두 번째 기술이 빠지는 문제도 있었다
+- 3장이 기술마다 문단 4개에 `"; "`로 이어 붙인 문장이었다
+- 6장의 편향 통제 설명이 설계 의도만 적고 실제 실행 결과(근거 검사 통과 수, 단일 출처 의존)는 쓰지 않았다
+- 규칙 기반 쌍 문장에 조사 오류("개발자은", "'…'로")와 조건 문구 중복이 있었다
+- 과거 실행에서 종합 LLM이 24자 해시 ID를 잘못 옮겨 적어 그 쌍이 규칙 문장으로 대체된 일이 있었다
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `_synthesis_paragraphs(state, synthesis, evidence, layout, insights=None)`: 시그니처 변경(`state`가 첫 인자, `insights` 추가). 구성은 도입 문장 → 기술별 "엇갈리는 지점"(번호 목록) → 기술별 "같은 방향 판정" → 두 기술 공통 패턴 → "적용 전 확인이 필요한 지점". `[상충]`/`[일치]` 접두 문단은 없어짐
+  - `_round_robin` 추가: 쌍을 기술별로 번갈아 뽑음
+  - `_open_points` 추가: 조건부로 보고된 도메인 항목과 근거 미확인 항목을 5장 마지막 문단으로 정리
+  - `_ref_title` 추가
+  - `_technical_section`: 기술마다 문단 4개이던 것을 한 문단으로 합침. 항목 표지(`KIVI의 핵심 원리:`, `KIVI의 실험 조건:`, `KIVI의 성능 보고:`, `KIVI의 한계:`)는 기존 문구 그대로 유지
+  - `_coverage_lines` 추가, `_limitations`가 맨 앞에 호출: 근거 검사 통과 수, 단일 출처에만 근거한 판정 수(관점별), 도메인 판정 중 논문 자체 보고인 수
+  - `_compose`, `build_report`에 `insights` 인자 추가
+- `src/skala_rag/agents/llm_output.py`
+  - `SummaryDraft` → `ReportDraft`로 이름 변경, `insights: list[str]` 필드 추가
+  - `LLMReportAgent`: 한 번의 호출로 SUMMARY와 5장 문단을 받고 각각 따로 검증·대체. `_check_text`(인용 번호·우열 표현·새 숫자·기술명 누락 검사)를 공용으로 분리. 결과에 `llm_sections`, `insights_fallback_reason` 추가, `generation_mode`에 `llm_partial` 값 추가
+  - `LLMSynthesisAgent`: 프롬프트의 근거 ID를 `E1`, `E2` 별칭으로 바꿔 주고, 받아들인 문장의 별칭을 근거 ID로 되돌림. `_pair_grounding`에 `aliases` 인자 추가
+- `src/skala_rag/agents/synthesis.py` — `describe_pair`의 문장 틀 변경(조사 오류 제거, 조건 문구 중복 제거)
+- `tests/test_output.py`, `tests/test_llm_output.py` — 새 구성에 맞게 수정, 테스트 4개 추가
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- 장 제목은 그대로다. 5장 문단의 문구와 개수가 달라졌다
+- 인용은 문단 끝이나 항목 끝에 붙는다. 문단 안의 모든 문장에 붙지 않으므로, 인용 여부를 셀 때는 문장이 아니라 문단(또는 `(1)`, `(2)` 항목) 단위로 보아야 한다
+- `report["generation_mode"]` 값: `deterministic`, `llm_assisted`, `llm_partial`, `deterministic_fallback`
+
+**충돌 시 지켜야 할 것**:
+- 5장에서 쌍을 고를 때 `_round_robin`을 빼고 앞에서부터 자르면 한 기술만 실린다(중립성 문제)
+- `_synthesis_paragraphs`의 "공통 패턴" 문단에 근거 없는 해석 문장을 넣지 않는다. 인용이 없는 주장은 품질 평가에서 감점된다
+- `LLMSynthesisAgent`가 받은 문장의 별칭을 `_to_ids`로 되돌리는 단계를 빼면 State의 `synthesis`에 `[E1]`이 남아 보고서에서 번호로 바뀌지 않는다
+- `LLMReportAgent`에서 SUMMARY와 5장은 각각 따로 검증한다. 하나가 실패해도 다른 하나는 살린다
+- 3장의 항목 표지 문구(`KIVI의 성능 보고:` 등)는 통합 테스트(`tests/test_integration.py`)가 확인한다. 문구를 바꾸려면 그 테스트의 담당자와 먼저 합의한다
+
+**확인**: pytest 72 passed. fixture 실행 5쪽. 근거 90건·출처 30개 State는 수준 2에서 10쪽
