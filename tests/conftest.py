@@ -67,7 +67,7 @@ def sample_evidence() -> dict:
     }
 
 
-def make_services(missing: bool = False, retry=None) -> PipelineServices:
+def make_services(missing: bool = False) -> PipelineServices:
     def technical(state):
         return {"technical_findings": {tech: {"principle": "fixture"} for tech in TECHS}, "evidence": sample_evidence()}
 
@@ -78,7 +78,6 @@ def make_services(missing: bool = False, retry=None) -> PipelineServices:
         stakeholder=lambda state: {"stakeholder_analysis": perspective("stakeholder")},
         domain=lambda state: {"domain_analysis": perspective("domain")},
         trl=lambda state: {"trl_analysis": perspective("trl")},
-        retry=retry,
     )
 
 

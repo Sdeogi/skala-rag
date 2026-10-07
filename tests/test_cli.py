@@ -40,7 +40,8 @@ def test_cli_draw_graph_writes_mermaid(tmp_path):
     target = tmp_path / "graph.mmd"
     completed = run_cli("--draw-graph", str(target))
     assert completed.returncode == 0, completed.stderr
-    assert "repair --> evidence_check;" in target.read_text(encoding="utf-8")
+    text = target.read_text(encoding="utf-8")
+    assert "market --> supervisor;" in text and "supervisor -.-> quality;" in text
 
 
 def test_cli_failing_services_module_writes_failure_manifest(tmp_path):
