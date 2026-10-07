@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import os
 from copy import deepcopy
+
+# Tests never read the developer's .env and never send traces: a local LANGSMITH key would otherwise
+# upload every fake graph run of the test suite to the real tracing project.
+os.environ["RAG_DISABLE_DOTENV"] = "1"
+for _name in ("LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING", "LANGCHAIN_TRACING_V2"):
+    os.environ[_name] = "false"
 
 from skala_rag.graph.workflow import PipelineServices
 

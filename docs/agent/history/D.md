@@ -454,3 +454,20 @@
 - 중립성 Judge 프롬프트에서 "판정 결과 전달은 우열이 아님" 문장을 빼면 두 기술의 TRL이 다를 때마다 중립성이 1점이 된다
 
 **확인**: pytest 175 passed(논문 검색 테스트 제외). 실제 실행으로는 아직 확인하지 않음
+
+## 2026-10-07 17:30 · sup/live-fixes · deogi
+
+**무엇을**: 테스트 실행이 개발자의 `.env`를 읽지 않고 트레이스도 보내지 않도록 함
+
+**왜**: `.env`에 LangSmith 키와 추적 설정이 있으면, `pytest`를 돌릴 때마다 테스트용 가짜 그래프 실행 수십 개가 실제 트레이스 프로젝트에 올라갔다. 제출용 트레이스를 찾기 어렵게 만든다.
+
+**바꾼 파일**:
+- `tests/conftest.py` — 맨 위에서 `RAG_DISABLE_DOTENV=1`과 추적 변수 네 개(`LANGSMITH_TRACING`, `LANGSMITH_TRACING_V2`, `LANGCHAIN_TRACING`, `LANGCHAIN_TRACING_V2`)를 `false`로 설정
+
+**남의 파일**: `tests/conftest.py`(그래프 담당의 공용 테스트 설정)
+
+**인터페이스 영향**: 없음. 실제 실행(`app.py`)의 추적은 그대로다
+
+**충돌 시 지켜야 할 것**: 이 설정은 다른 import보다 먼저 실행돼야 한다. 파일 아래쪽으로 옮기면 `app.py`가 먼저 `.env`를 읽는다
+
+**확인**: pytest 204 passed. 테스트 실행 뒤 트레이스 프로젝트에 새 실행이 0건인 것을 LangSmith API로 확인. 실제 실행 여섯 건은 `skala-rag-live` 이름과 `run_id` 메타데이터로 기록돼 있음
