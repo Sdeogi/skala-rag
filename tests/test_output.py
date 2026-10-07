@@ -193,8 +193,48 @@ def test_large_report_is_tightened_until_it_fits_the_page_limit():
     assert report["layout"]["fits"] and report["layout"]["pdf_pages"] <= MAX_PDF_PAGES and report["layout"]["level"] > 0
     assert pdf_page_count(report) == report["layout"]["pdf_pages"]
     insights = next(section for section in report["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
-    assert "생략했다" in insights[0] and sum(p.startswith("[상충]") for p in insights) <= LAYOUTS[0].conflicts
+    assert "생략했다" in insights[0]
     assert all(heading in report["markdown"] for heading in ("## 4.1 시장성", "## 4.2 이해관계자", "## 4.3 도메인 적용", "## 4.4 기술 성숙도"))
+
+
+def test_chapter_five_covers_both_technologies_shared_patterns_and_open_points():
+    state = large_state()
+    state["domain_analysis"]["technologies"]["InfiniGen"]["memory"] = {"label": "보고 없음", "reason": "자료 없음", "evidence_ids": []}
+    for item in state["evidence_check"]["items"]:
+        if (item["perspective"], item["technology"], item["field"]) == ("domain", "InfiniGen", "memory"):
+            item["passed"] = False
+    state["synthesis"] = synthesize(state)
+    paragraphs = next(section for section in _compose(state, None, LAYOUTS[0])["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
+    conflicts = [p for p in paragraphs if "관점 간 평가가 엇갈리는 지점" in p]
+    assert [p.split("에서")[0] for p in conflicts] == ["KIVI", "InfiniGen"]  # neither technology fills the chapter alone
+    assert all("(2) " in p and "(3) " not in p and p.count("성립 조건은 각각") == LAYOUTS[0].conflicts // 2 for p in conflicts)
+    assert any(p.startswith("두 기술에 공통으로 나타나는 패턴") for p in paragraphs)
+    closing = paragraphs[-1]
+    assert closing.startswith("클라우드 LLM 서빙에 적용하기 전에 확인이 필요한 지점")
+    assert "KIVI 응답 지연(조건부 보고" in closing and "InfiniGen 도메인 적용(메모리 절감)" in closing
+    assert not any(p.startswith("[상충]") or p.startswith("[일치]") for p in paragraphs)
+
+
+def test_technical_overview_is_one_paragraph_per_technology():
+    state = base_state()
+    state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 양자화한다.", "experiment_conditions": ["Llama-2-7B.", "A100"], "performance": ["2.6x memory"], "limitations": ["긴 문맥 미검증"], "evidence_ids": ["e1"]}}
+    section = next(section for section in build_report(state)["sections"] if section["heading"] == "3. 기술 개요")
+    assert section["paragraphs"][0] == "KIVI의 핵심 원리: KV를 2비트로 양자화한다. KIVI의 실험 조건: Llama-2-7B; A100. KIVI의 성능 보고: 2.6x memory. KIVI의 한계: 긴 문맥 미검증(1)."
+    assert section["paragraphs"][1] == "InfiniGen: 기술 조사 결과 미확인"
+
+
+def test_limitations_report_evidence_check_coverage_and_single_source_dependence():
+    state = base_state()
+    state["evidence_check"] = {"items": [
+        {"perspective": "market", "technology": "KIVI", "field": "adoption", "passed": True},
+        {"perspective": "domain", "technology": "KIVI", "field": "memory", "passed": True},
+        {"perspective": "domain", "technology": "KIVI", "field": "quality", "passed": False},
+    ]}
+    state["domain_analysis"] = {"technologies": {"KIVI": {"memory": {"label": "적용 가능 보고", "reason": "절감", "evidence_ids": ["e1"]}}}}
+    limits = next(section for section in build_report(state)["sections"] if section["heading"] == "6. 한계점")["paragraphs"]
+    assert any(p.startswith("근거 검사: 판정 항목 3개 중 2개가 근거 확인을 통과했다.") for p in limits)
+    single = next(p for p in limits if p.startswith("단일 출처 의존"))
+    assert "판정 2개 중 2개" in single and "도메인 적용 판정 1개는 해당 기술 논문의 자체 보고" in single
 
 
 def test_small_report_keeps_the_roomiest_layout():
@@ -250,3 +290,91 @@ def test_markers_sit_at_the_end_of_their_clause_not_inside_the_sentence():
         "Fig. 3에서 보듯 증가한다(1).",  # an abbreviation's period does not end the clause
     ]
     assert citation_map == {"1": "e1", "2": "e2", "3": "e3"}
+
+
+def quality(action, instructions=(), **items):
+    scores = {"groundedness": 5, "neutrality": 5, "bias": 5, "coverage": 5, **items}
+    return {
+        "passed": False,
+        "threshold": 4,
+        "items": {key: {"score": score, "rule_score": score, "llm_score": None, "reasons": [f"{key} 사유"] if score < 4 else []} for key, score in scores.items()},
+        "action": action,
+        "instructions": list(instructions),
+        "rework_requests": [],
+    }
+
+
+def revisable_state():
+    state = base_state()
+    state["sources"]["s2"] = {"title": "Blog", "url": "https://example.org/blog", "source_type": "web"}
+    state["evidence"]["e2"] = {"technology": "KIVI", "source_id": "s2", "location": "웹", "quote": "second", "claim_type": "reported_fact"}
+    state["evidence_check"] = {"items": [{"perspective": "market", "technology": "KIVI", "field": "adoption", "passed": True}]}
+    state["market_analysis"]["technologies"]["KIVI"]["adoption"] = {"label": "연구 재현 수준", "reason": "공개 코드가 있다. KIVI가 더 우수하다.", "evidence_ids": ["e1"]}
+    state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 양자화한다", "limitations": ["긴 문맥은 검증되지 않았다"], "evidence_ids": ["e2"]}}
+    return state
+
+
+def sections_by_heading(report):
+    return {section["heading"]: section for section in report["sections"]}
+
+
+def test_rewrite_removes_only_the_instructed_sentence_from_the_named_section():
+    state = revisable_state()
+    first = build_report(state)
+    assert "더 우수하다" in first["markdown"] and first["revision"] == {"number": 0}
+    instruction = {"item": "neutrality", "section": "4.1 시장성", "problem": "우열 표현", "quote": "KIVI가 더 우수하다.", "fix": "삭제"}
+    state["report"] = first
+    state["quality_result"] = quality("rewrite_report", [instruction], neutrality=1)
+    second = build_report(state)
+    assert "더 우수하다" not in second["markdown"] and "공개 코드가 있다." in second["markdown"]
+    assert second["revision"] == {"number": 1, "action": "rewrite_report", "applied": [{"item": "neutrality", "section": "4.1 시장성", "quote": "KIVI가 더 우수하다.", "result": "removed"}]}
+    before, after = sections_by_heading(first), sections_by_heading(second)
+    assert all(before[heading] == after[heading] for heading in before if heading != "4.1 시장성")  # other sections are untouched
+    state["report"] = second
+    assert build_report(state)["revision"]["number"] == 2
+
+
+def test_removed_sentence_takes_its_citation_out_of_the_appendix():
+    state = revisable_state()
+    first = build_report(state)
+    assert set(first["citation_map"].values()) == {"e1", "e2"}
+    quote = sections_by_heading(first)["3. 기술 개요"]["paragraphs"][0]  # quoted with citation numbers, as the evaluator sees it
+    state["report"] = first
+    state["quality_result"] = quality("rewrite_report", [{"item": "groundedness", "section": "3. 기술 개요", "problem": "근거 불일치", "quote": quote, "fix": "삭제"}], groundedness=2)
+    second = build_report(state)
+    assert set(second["citation_map"].values()) == {"e1"} and second["used_source_ids"] == ["s1"]
+    assert sections_by_heading(second)["3. 기술 개요"]["paragraphs"][0] != quote
+    assert "second" not in second["markdown"]
+
+
+def test_instruction_records_for_missing_quotes_and_unknown_sections():
+    state = revisable_state()
+    state["report"] = build_report(state)
+    state["quality_result"] = quality(
+        "recollect",
+        [
+            {"item": "neutrality", "section": "없는 절", "quote": "KIVI가 더 우수하다"},  # unknown section: searched everywhere
+            {"item": "groundedness", "section": "5. 시사점", "quote": "보고서에 없는 문장"},
+            {"item": "coverage", "section": "4.2 이해관계자", "quote": ""},
+        ],
+        coverage=2,
+    )
+    report = build_report(state)
+    assert [record["result"] for record in report["revision"]["applied"]] == ["removed", "not_found", "no_quote"]
+    assert report["revision"]["action"] == "recollect" and "더 우수하다" not in report["markdown"]
+
+
+def test_accept_with_limits_lists_failed_quality_items_and_leaves_the_body_alone():
+    state = revisable_state()
+    first = build_report(state)
+    state["report"] = first
+    state["quality_result"] = quality("accept_with_limits", [{"item": "neutrality", "section": "4.1 시장성", "quote": "KIVI가 더 우수하다."}], neutrality=2, bias=3)
+    second = build_report(state)
+    limits = sections_by_heading(second)["6. 한계점"]["paragraphs"]
+    line = next(p for p in limits if p.startswith("품질 평가 미달 항목"))
+    assert "통과 기준(4점)" in line and "중립성 2점(neutrality 사유)" in line and "편향 통제 3점" in line and "Groundedness" not in line
+    assert "더 우수하다" in second["markdown"] and second["revision"] == {"number": 1, "action": "accept_with_limits", "applied": []}
+    before, after = sections_by_heading(first), sections_by_heading(second)
+    assert all(before[heading] == after[heading] for heading in before if heading != "6. 한계점")
+    state["quality_result"] = {**quality("pass"), "passed": True}
+    assert build_report(state)["revision"] == {"number": 0}

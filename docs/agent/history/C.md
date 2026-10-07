@@ -185,3 +185,38 @@
 **충돌 시 지켜야 할 것**: `_judge_groundedness`의 점수용·참고용 분리를 합치지 않는다. 합치면 작성기가 고칠 수 없는 3장 때문에 재작성 요청이 반복된다.
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents`, `pytest -q`, `app.py --mode replay --fixture` 통과. 점수 반영 장 목록을 전체로 바꾸는 변이와 정렬을 끄는 변이를 각각 테스트가 잡는다. 실제 Judge(`gpt-5.4-mini`) 6회 호출: 3장·4장 지적이 참고로만 남고 수정 지시는 SUMMARY와 5장에만 붙었다. 이 실행에서는 SUMMARY·5장 묶음 중 하나가 2점을 줘서 Groundedness는 여전히 미달이었다(작성기가 고칠 수 있는 장이다). Judge 점수는 실행마다 한 단계쯤 흔들린다.
+
+## 2026-10-07 15:07 · sup/quality · piso
+
+**무엇을**: `supervisor`(보고서 5·6장 개편과 평가 결과로 보고서 고치기)를 병합하면서 충돌 3개 파일을 풀고, 작성기의 수정 코드가 각주 표시 `(n)`에서도 동작하도록 맞췄다. 평가기의 중립성 수정 지시도 정리했다.
+
+**왜**: 보고서 작성기가 평가 결과의 `instructions`를 읽고 `quote`가 가리키는 문장을 고치거나 지운다. 그런데 평가기가 인용하는 문장은 번호를 매긴 최종 보고서의 글(`…유지했다(1)(2).`)이고, 작성기는 번호를 매기기 전 원문(`…유지했다 [id].`)에서 그 문장을 찾으며, 이전 판 보고서의 `[n]`으로 인용을 읽는다. 표기가 달라지면 모든 지시가 `not_found`가 되고 이전 판 LLM 문장의 인용이 깨진다.
+
+**충돌 해결** (양쪽 의도를 모두 남겼고 버린 변경은 없다):
+- `src/skala_rag/agents/llm_output.py`: D의 재구성(`_sentence_fixes`, `_previous_llm_texts`, 수정 요청 검증)을 그대로 받았다. 이 브랜치가 `LLMReportAgent` 시스템 메시지에 넣었던 한 문장은 D의 새 메시지의 "공통 규칙"에 다시 넣었다
+- `src/skala_rag/agents/report.py`: 모듈 설명은 이 브랜치의 인용 설명과 D의 수정(Revisions) 설명을 모두 남겼다. `_compose`는 D의 `apply_instructions` 호출(번호 매기기 **전**)을 그대로 두고 주석만 각주 용어로 맞췄다
+- `tests/test_output.py`: 양쪽이 파일 끝에 추가한 테스트를 모두 남겼다
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py` (D 소유)
+  - `plain_text`: 각주 표시 `(1)(2)`(`FOOTNOTE_MARKER`)도 지우고, 구두점 앞 공백과 문장 끝의 `근거:` 꼬리표를 정리한다. 번호 매긴 보고서에서 가져온 `quote`와 번호 매기기 전 원문이 같은 글로 비교된다
+  - `_covered`: 인용 토큰만 남은 조각(문단 끝의 `근거: [1] [2]`)을 바로 앞 문장과 함께 지운다. 지우지 않으면 문장은 사라지는데 근거가 각주에 남는다
+  - `_quality_limit_lines`: 항목이 `threshold`를 가지면 최상위 통과선 대신 그 값으로 미달을 가른다(편향 통제의 통과선은 3점)
+- `src/skala_rag/agents/llm_output.py` (D 소유)
+  - `bracketed` 추가: 번호 매긴 보고서의 `(1)(2)`를 `[1] [2]`로 되돌려 아래 두 곳에 넘긴다. 줄 맨 앞의 `(1) 항목`(목록 번호)은 바꾸지 않는다
+  - `_previous_llm_texts`, `_sentence_fixes`: 이전 판 문장을 `bracketed`로 바꾼 뒤 기존 로직(`[n]` → 근거 ID, 인용 검증)에 넘긴다
+  - `LLMReportAgent` 시스템 메시지: "본문에는 근거 번호가 (번호)로 표시돼 있다. 문장마다 해당 근거 번호를 [번호] 형태로 인용한다."
+- `tests/test_output.py`, `tests/test_llm_output.py` (D 소유) — D의 새 테스트가 `[1]`로 단언하던 곳을 `(1)` 표기로 고치고(`shown`, `shown_all` 도우미), `bracketed` 테스트 1개 추가
+- `src/skala_rag/agents/quality.py`: 중립성 수정 지시를 점수를 깎은 표현에만 만든다. 같은 문장은 한 번만 지시하고(명시 표현이면서 강한 비교 표현인 문장이 두 번 나가던 것), 약한 비교 표현은 그것만으로 미달(3건 이상)일 때만 지시한다. 논문이 보고한 baseline 비교 같은 정당한 문장이 우열 문장 하나 때문에 함께 지워지던 것을 막는다
+- `tests/test_quality.py` — 위 두 가지 테스트 추가(47개)
+
+**남의 파일**: 위 `report.py`, `llm_output.py`, 두 테스트 파일은 트랙 D 소유다. 수정은 `(n)` 표기를 읽는 데 필요한 최소한이고, D의 로직(지시 적용 순서, 이전 판 문장 재사용, 문장 고쳐 쓰기 검증)은 그대로다.
+
+**인터페이스 영향**: `instructions[*].quote`는 번호 매긴 최종 보고서의 문장이다. 작성기는 `plain_text`로 표시와 토큰을 지우고 비교하므로 `(n)`·`[n]`·근거 ID가 있어도 없어도 된다.
+
+**충돌 시 지켜야 할 것**:
+- `plain_text`에서 `FOOTNOTE_MARKER` 제거와 `근거:` 꼬리표 제거를 빼면 평가기의 지시가 모두 `not_found`가 된다
+- `_covered`의 인용 전용 조각 처리를 빼면 문단 끝 `근거: […]`가 남아 지운 문장의 근거가 각주에 계속 실린다
+- `bracketed` 없이 이전 판 문장을 쓰면 번호가 낡은 `(n)`으로 남아 새 번호와 어긋난다
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 132 passed, `pytest -q` 156 passed, `app.py --mode replay --fixture` 정상, `git diff --check` 통과. 실제 replay State에서 전체 루프를 실제 LLM(`gpt-5.4-mini`)으로 확인했다: 시장성 판정 이유에 우열 문장을 넣으면 1차 평가에서 중립성 1점과 지시 1건 → 작성기가 해당 표 칸 문장을 LLM으로 고쳐 씀(`replaced`, 수락 1·거부 0) → 우열 문장이 사라지고 2차 평가는 `pass`, 각주 문제 0건, PDF 9쪽. LLM 없이는 같은 지시로 문장이 삭제(`removed`)되고 역시 `pass`가 된다.

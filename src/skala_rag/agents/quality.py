@@ -680,16 +680,20 @@ def neutrality_rule(parsed: Parsed, ctx: _Context) -> Rule:
         rule.score = STRONG_COMPARATIVE_SCORE
     elif weak:
         rule.score = next(score for lower, score in WEAK_COMPARATIVE_BANDS if len(weak) >= lower)
-    for label, hits, problem in (
+    # 수정 지시는 점수를 깎은 표현에만 만든다. 우열·비교 표현이 있으면 그것만 고치면 되고, 약한 비교 표현(논문이 보고한
+    # baseline 비교 등 정당한 문장일 수 있다)은 그것만으로 미달일 때(3건 이상)에만 지시한다. 같은 문장은 한 번만 지시한다.
+    groups = [
         ("명시적 추천·순위 표현", explicit, "우열·추천·순위로 읽히는 표현"),
         ("비교 우위 표현", strong, "한 기술이 낫다는 비교 우위로 읽히는 표현"),
-        ("약한 비교 표현", weak, "비교 우위로 읽힐 수 있는 표현"),
-    ):
+    ]
+    if not explicit and not strong and rule.score < DEFAULT_THRESHOLD:
+        groups.append(("약한 비교 표현", weak, "비교 우위로 읽힐 수 있는 표현"))
+    done: set[str] = set()
+    for label, hits, problem in groups:
         if not hits:
             continue
         places = ", ".join(dict.fromkeys(f"{owner.section} {' '.join(owner.where.split()[:2])}" for owner, _ in hits))
         rule.reasons.append(f"{label} {len(hits)}건: {places}")
-        done: set[str] = set()
         for owner, hit in hits:
             if owner.text in done:
                 continue

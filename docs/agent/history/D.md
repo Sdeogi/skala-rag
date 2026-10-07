@@ -89,3 +89,85 @@
 - `_write_pdf`의 반환 값은 튜플이다. 글꼴만 받던 호출부를 되살리면 `save_outputs`가 깨진다
 
 **확인**: pytest 68 passed. 근거 60건·출처 20개 State: 수준 0에서 13쪽 → 수준 1에서 10쪽으로 확정. 근거 90건·출처 30개에 SUMMARY 1200자·오류 8건을 더한 경우: 수준 2에서 10쪽
+
+## 2026-10-07 14:09 · sup/report · deogi
+
+**무엇을**: 보고서 3장·5장·6장의 본문을 다시 구성하고, LLM이 5장 시사점도 쓰게 함. 종합 단계 LLM에는 긴 근거 ID 대신 짧은 별칭(E1, E2)을 줌
+
+**왜**:
+- 5장이 같은 틀의 문장으로 쌍을 나열해 "대상 도메인에서 무슨 의미인가"가 없었다. 쌍을 앞에서부터 자르면 첫 번째 기술(KIVI)의 쌍만 실려 두 번째 기술이 빠지는 문제도 있었다
+- 3장이 기술마다 문단 4개에 `"; "`로 이어 붙인 문장이었다
+- 6장의 편향 통제 설명이 설계 의도만 적고 실제 실행 결과(근거 검사 통과 수, 단일 출처 의존)는 쓰지 않았다
+- 규칙 기반 쌍 문장에 조사 오류("개발자은", "'…'로")와 조건 문구 중복이 있었다
+- 과거 실행에서 종합 LLM이 24자 해시 ID를 잘못 옮겨 적어 그 쌍이 규칙 문장으로 대체된 일이 있었다
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `_synthesis_paragraphs(state, synthesis, evidence, layout, insights=None)`: 시그니처 변경(`state`가 첫 인자, `insights` 추가). 구성은 도입 문장 → 기술별 "엇갈리는 지점"(번호 목록) → 기술별 "같은 방향 판정" → 두 기술 공통 패턴 → "적용 전 확인이 필요한 지점". `[상충]`/`[일치]` 접두 문단은 없어짐
+  - `_round_robin` 추가: 쌍을 기술별로 번갈아 뽑음
+  - `_open_points` 추가: 조건부로 보고된 도메인 항목과 근거 미확인 항목을 5장 마지막 문단으로 정리
+  - `_ref_title` 추가
+  - `_technical_section`: 기술마다 문단 4개이던 것을 한 문단으로 합침. 항목 표지(`KIVI의 핵심 원리:`, `KIVI의 실험 조건:`, `KIVI의 성능 보고:`, `KIVI의 한계:`)는 기존 문구 그대로 유지
+  - `_coverage_lines` 추가, `_limitations`가 맨 앞에 호출: 근거 검사 통과 수, 단일 출처에만 근거한 판정 수(관점별), 도메인 판정 중 논문 자체 보고인 수
+  - `_compose`, `build_report`에 `insights` 인자 추가
+- `src/skala_rag/agents/llm_output.py`
+  - `SummaryDraft` → `ReportDraft`로 이름 변경, `insights: list[str]` 필드 추가
+  - `LLMReportAgent`: 한 번의 호출로 SUMMARY와 5장 문단을 받고 각각 따로 검증·대체. `_check_text`(인용 번호·우열 표현·새 숫자·기술명 누락 검사)를 공용으로 분리. 결과에 `llm_sections`, `insights_fallback_reason` 추가, `generation_mode`에 `llm_partial` 값 추가
+  - `LLMSynthesisAgent`: 프롬프트의 근거 ID를 `E1`, `E2` 별칭으로 바꿔 주고, 받아들인 문장의 별칭을 근거 ID로 되돌림. `_pair_grounding`에 `aliases` 인자 추가
+- `src/skala_rag/agents/synthesis.py` — `describe_pair`의 문장 틀 변경(조사 오류 제거, 조건 문구 중복 제거)
+- `tests/test_output.py`, `tests/test_llm_output.py` — 새 구성에 맞게 수정, 테스트 4개 추가
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- 장 제목은 그대로다. 5장 문단의 문구와 개수가 달라졌다
+- 인용은 문단 끝이나 항목 끝에 붙는다. 문단 안의 모든 문장에 붙지 않으므로, 인용 여부를 셀 때는 문장이 아니라 문단(또는 `(1)`, `(2)` 항목) 단위로 보아야 한다
+- `report["generation_mode"]` 값: `deterministic`, `llm_assisted`, `llm_partial`, `deterministic_fallback`
+
+**충돌 시 지켜야 할 것**:
+- 5장에서 쌍을 고를 때 `_round_robin`을 빼고 앞에서부터 자르면 한 기술만 실린다(중립성 문제)
+- `_synthesis_paragraphs`의 "공통 패턴" 문단에 근거 없는 해석 문장을 넣지 않는다. 인용이 없는 주장은 품질 평가에서 감점된다
+- `LLMSynthesisAgent`가 받은 문장의 별칭을 `_to_ids`로 되돌리는 단계를 빼면 State의 `synthesis`에 `[E1]`이 남아 보고서에서 번호로 바뀌지 않는다
+- `LLMReportAgent`에서 SUMMARY와 5장은 각각 따로 검증한다. 하나가 실패해도 다른 하나는 살린다
+- 3장의 항목 표지 문구(`KIVI의 성능 보고:` 등)는 통합 테스트(`tests/test_integration.py`)가 확인한다. 문구를 바꾸려면 그 테스트의 담당자와 먼저 합의한다
+
+**확인**: pytest 72 passed. fixture 실행 5쪽. 근거 90건·출처 30개 State는 수준 2에서 10쪽
+
+## 2026-10-07 14:30 · sup/report-rewrite · deogi
+
+**무엇을**: 보고서 작성기가 품질 평가 결과(`state["quality_result"]`)를 읽어 지적된 부분만 고쳐 쓰거나, 미달 항목을 6장 한계점에 적도록 함
+
+**왜**: 보고서 생성 뒤 품질 평가에서 미달이 나오면 다시 써야 하는데, 작성기가 평가 결과를 읽지 않으면 같은 보고서가 다시 나와 루프가 헛돈다. 지적받지 않은 절까지 새로 쓰면 고친 부분 외에 다른 문제가 새로 생길 수 있어 지적된 절만 바꾼다. 지적된 문장을 지우기만 하면 필요한 내용(예: 판정 이유)까지 사라지므로, LLM을 쓸 수 있을 때는 고쳐 쓰고 삭제는 마지막 수단으로 둔다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `revision_plan(state)` 추가: `quality_result["action"]`이 `rewrite_report`/`recollect`/`accept_with_limits`일 때 수정 계획(action, instructions, 판 번호)을 반환. `pass`이거나 평가 결과가 없으면 `None`
+  - `apply_instructions(sections, instructions, handled, replacements)` 추가: 지시의 `quote`가 가리키는 문장을 `section`으로 지정된 절에서 고침(문단과 표 칸 모두). `replacements`에 고쳐 쓴 문장이 있으면 그것으로 바꾸고, 없으면 삭제. 문장 뒤에 붙은 인용도 함께 처리. 지시마다 결과(`replaced`/`removed`/`rewritten`/`not_found`/`no_quote`)를 기록
+  - `_covered`, `_replace_quote`, `locate_instruction`, `plain_text`, `_quality_limit_lines` 추가
+  - `_compose`: 본문 조립 후 **번호를 매기기 전에** `apply_instructions` 호출. 반환 값에 `revision` 추가(`{"number": 0}` 또는 `{number, action, applied}`)
+  - `_compose`, `build_report`에 `handled`(LLM이 통째로 다시 쓴 절 이름), `replacements`(지시 순번 → 고쳐 쓴 문장) 인자 추가
+  - `_limitations`: `accept_with_limits`일 때 "품질 평가 미달 항목" 줄을 맨 앞에 추가
+- `src/skala_rag/agents/llm_output.py`
+  - `LLMReportAgent.__call__` 재구성: `rewrite_report`이면 지적된 절 중 LLM이 쓴 절(SUMMARY, 5장)만 다시 쓰고 나머지 LLM 문장은 이전 판 것을 그대로 유지. 지적이 규칙 기반 절에만 있으면 LLM을 호출하지 않음. `accept_with_limits`이면 LLM 호출 없이 이전 문장 유지. `recollect` 뒤에는 State가 바뀌었으므로 두 절을 모두 다시 씀
+  - `_previous_llm_texts`, `_check_requests` 추가. 다시 쓴 문장에 지적받은 문장이 그대로 남아 있으면 그 절은 규칙 기반으로 대체
+  - `LLMReportAgent._sentence_fixes`, `SentenceFix`/`SentenceFixes` 추가: 규칙 기반 절(3장, 4장 표, 6장 등)에서 지적된 문장을 LLM이 한 번의 호출로 고쳐 씀. 고쳐 쓴 문장은 원래 문장의 인용만 쓰는지, 근거에 없는 숫자가 없는지, 우열 표현이 없는지, 지적받은 문장과 같지 않은지 검증하고, 실패하거나 `drop`이면 삭제 규칙에 맡김
+  - 프롬프트에 `revision_requests` 전달
+- `tests/test_output.py`, `tests/test_llm_output.py` — 테스트 11개 추가
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- 보고서 작성기가 읽는 입력: `state["quality_result"]`의 `action`, `threshold`, `items[*].score/reasons`, `instructions[*].item/section/problem/quote/fix`, 그리고 이전 판인 `state["report"]`
+- `instructions[*].section`은 보고서의 장 제목과 정확히 같아야 그 절만 고쳐진다. 일치하는 제목이 없으면 모든 절에서 찾는다
+- `instructions[*].quote`는 보고서 문장 그대로여야 한다. 인용 번호(`[3]`)는 있어도 없어도 된다(비교할 때 대괄호 토큰은 무시)
+- `report["revision"]`이 새로 생김. `report` metrics에 `revision` 숫자 추가
+
+**충돌 시 지켜야 할 것**:
+- `_compose`에서 `apply_instructions`는 `number_citations`보다 **앞**이어야 한다. 순서를 바꾸면 삭제된 문장의 근거가 부록·REFERENCE에 남는다
+- `LLMReportAgent`가 `rewrite_report`에서 지적받지 않은 절까지 새로 쓰게 되돌리면 안 된다(이전 판 문장을 `_previous_llm_texts`로 되살려 넘기는 부분)
+- `_sentence_fixes`의 검증(원래 문장의 인용만 허용, 새 숫자 금지, 우열 표현 금지)을 느슨하게 하면 고쳐 쓰는 과정에서 근거 없는 내용이 들어온다. 검증 실패 시 삭제로 넘어가는 경로를 유지한다
+- LLM이 없는 실행(replay)에서는 `replacements`가 비어 삭제만 일어난다. 정상 동작이다
+- `accept_with_limits`에서는 본문을 바꾸지 않는다. 상한에 도달해 그대로 받아들이는 경우이므로 한계점에 적기만 한다
+- `revision_plan`은 `action == "pass"`와 평가 결과 없음을 똑같이 "수정 없음"으로 다룬다. 이 판정을 바꾸면 첫 보고서 생성 때 이전 판을 찾으려다 실패한다
+
+**확인**: pytest 83 passed, `app.py --mode replay --fixture` 실행 정상

@@ -617,3 +617,21 @@ def test_a_failed_reference_call_does_not_touch_the_score():
     assert item["llm_score"] == 5 and result["passed"]
     assert any("참고용 Groundedness Judge 호출" in reason and "실패" in reason for reason in item["reasons"])
     assert any(event.get("judge_errors") for event in metrics)
+
+
+def test_neutrality_instructions_target_only_the_expressions_that_lowered_the_score():
+    state = make_state()
+    add_paragraph(state, "5.", "KIVI가 InfiniGen보다 더 우수하다(1).")  # 명시 표현이면서 강한 비교 표현이기도 하다
+    add_paragraph(state, "5.", "긴 문맥에서는 InfiniGen이 유리하다고 논문이 보고한다(1).")  # 약한 비교 표현 1건: 정당한 보고 문장
+    result, _, _ = evaluate(state)
+    quotes = [entry["quote"] for entry in result["instructions"] if entry["item"] == "neutrality"]
+    assert quotes == ["KIVI가 InfiniGen보다 더 우수하다(1)."]  # 같은 문장을 한 번만, 약한 표현은 제외
+
+
+def test_weak_expressions_get_instructions_only_when_they_alone_fail_the_item():
+    state = make_state()
+    for number in range(3):
+        add_paragraph(state, "5.", f"문맥 {number}에서는 InfiniGen이 유리하다(1).")
+    result, _, _ = evaluate(state)
+    assert result["items"]["neutrality"]["rule_score"] == 3 and not result["passed"]
+    assert len([entry for entry in result["instructions"] if entry["item"] == "neutrality"]) == 3

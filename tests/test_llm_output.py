@@ -1,6 +1,6 @@
 from conftest import FakeModel
 
-from skala_rag.agents.llm_output import LLMReportAgent, LLMSynthesisAgent, numbers_in, trim_to_sentences
+from skala_rag.agents.llm_output import LLMReportAgent, LLMSynthesisAgent, bracketed, numbers_in, trim_to_sentences
 
 
 def sample_state():
@@ -17,10 +17,17 @@ def sample_state():
 
 
 def test_llm_synthesis_writes_pair_texts_and_records_metrics():
-    draft = {"pairs": [{"id": "C0", "keep": True, "reason": "도입 발표와 운영 우려가 공존한다 [e1].", "uncertainty": "대규모 배포 조건에서만 확인됐다 [e1]."}]}
-    result = LLMSynthesisAgent(FakeModel(draft))(sample_state())
+    draft = {"pairs": [{"id": "C0", "keep": True, "reason": "도입 발표와 운영 우려가 공존한다 [E1].", "uncertainty": "대규모 배포 조건에서만 확인됐다 [E1]."}]}
+    class Recording(FakeModel):
+        def invoke(self, messages):
+            self.seen = messages
+            return super().invoke(messages)
+
+    model = Recording(draft)
+    result = LLMSynthesisAgent(model)(sample_state())
     assert len(result["conflicts"]) == 1 and result["conflicts"][0]["generation"] == "llm"
-    assert result["conflicts"][0]["reason"].startswith("도입 발표와")
+    assert result["conflicts"][0]["reason"] == "도입 발표와 운영 우려가 공존한다 [e1]."  # alias mapped back to the evidence ID
+    assert '"evidence_id": "E1"' in model.seen[-1].content and '"e1"' not in model.seen[-1].content
     assert result["generation_mode"] == "llm_assisted" and result["llm_review"]["accepted"] == 1
     assert result["metrics"][0]["node"] == "synthesis" and result["metrics"][0]["pairs_accepted"] == 1
 
@@ -45,7 +52,7 @@ def test_llm_synthesis_can_drop_pairs_and_falls_back_on_model_failure():
 
 def test_llm_report_accepts_grounded_summary_and_rejects_fabricated_citation():
     state = sample_state()
-    state["synthesis"] = LLMSynthesisAgent(FakeModel({"pairs": [{"id": "C0", "reason": "r [e1]", "uncertainty": "u [e1]"}]}))(state)
+    state["synthesis"] = LLMSynthesisAgent(FakeModel({"pairs": [{"id": "C0", "reason": "r [E1]", "uncertainty": "u [E1]"}]}))(state)
     good = LLMReportAgent(FakeModel({"summary": "KIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [1]. TRL 판정은 공개 정보 기반 추정이다 [1]."}))(state)
     assert good["markdown"].startswith("# SUMMARY\n\nKIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다(1).")
     assert good["generation_mode"] == "llm_assisted" and good["metrics"][0]["node"] == "report"
@@ -57,6 +64,30 @@ def test_llm_report_accepts_grounded_summary_and_rejects_fabricated_citation():
     assert raw_id["generation_mode"] == "deterministic_fallback"
     ranked = LLMReportAgent(FakeModel({"summary": "KIVI가 더 우수하다 [1]."}))(state)
     assert "ranking" in ranked["fallback_reason"]
+
+
+def test_llm_insights_replace_chapter_five_and_fall_back_independently_of_the_summary():
+    state = sample_state()
+    state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
+    summary = "KIVI의 도입 발표와 운영 우려가 함께 확인된다 [1]."
+    insights = ["KIVI는 도입 발표와 운영 우려가 엇갈리며 대규모 배포 조건에서만 확인됐다 [1].", "적용 전에 운영 부담을 다시 확인해야 한다 [1]."]
+    good = LLMReportAgent(FakeModel({"summary": summary, "insights": insights}))(state)
+    chapter = next(section for section in good["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
+    assert chapter[1:] == shown_all(insights) and chapter[0].startswith("관점 간 상충 쌍")
+    assert good["generation_mode"] == "llm_assisted" and good["llm_sections"] == {"summary": True, "insights": True}
+
+    ranked = LLMReportAgent(FakeModel({"summary": summary, "insights": ["KIVI가 더 우수하다 [1].", "둘째 문단 [1]."]}))(state)
+    assert ranked["generation_mode"] == "llm_assisted" and ranked["llm_sections"] == {"summary": True, "insights": False}
+    assert "ranking" in ranked["insights_fallback_reason"] and "더 우수" not in ranked["markdown"]
+    assert ranked["markdown"].startswith("# SUMMARY\n\nKIVI의 도입 발표와")
+
+    partial = LLMReportAgent(FakeModel({"summary": "KIVI는 2029년에 입증되었다 [1].", "insights": insights}))(state)
+    assert partial["generation_mode"] == "llm_partial" and partial["llm_sections"] == {"summary": False, "insights": True}
+    assert "2029" not in partial["markdown"] and shown(insights[0]) in partial["markdown"]
+
+    long = LLMReportAgent(FakeModel({"summary": summary, "insights": [insights[0]] * 2 + ["KIVI " + "가" * 1700 + " [1]."]}))(state)
+    kept = next(section for section in long["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
+    assert len(kept) == 3  # the overlong trailing paragraph is dropped, the rest is kept
 
 
 def test_number_guard_treats_korean_suffixes_consistently():
@@ -78,3 +109,137 @@ def test_overlong_summary_is_trimmed_at_a_sentence_boundary():
     text = report["sections"][0]["paragraphs"][0]
     assert len(text) <= 1200 and text.endswith("(1).")
     assert trim_to_sentences("짧은 문장이다.", 100) == "짧은 문장이다."
+
+
+SUMMARY_V1 = "KIVI의 도입 발표와 운영 우려가 함께 확인된다 [1]."
+INSIGHTS_V1 = ["KIVI는 도입 발표가 있어 다른 선택지보다 유리하다 [1].", "적용 전에 운영 부담을 다시 확인해야 한다 [1]."]
+INSIGHTS_V2 = ["KIVI는 도입 발표와 운영 우려가 엇갈리며 대규모 배포 조건에서만 확인됐다 [1].", "적용 전에 운영 부담을 다시 확인해야 한다 [1]."]
+
+
+def reviewed_state(action, instructions):
+    state = sample_state()
+    state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
+    state["report"] = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1}))(state)
+    assert state["report"]["llm_sections"] == {"summary": True, "insights": True}
+    state["quality_result"] = {"passed": False, "threshold": 4, "items": {"neutrality": {"score": 2, "reasons": ["비교 우위 표현"]}}, "action": action, "instructions": instructions, "rework_requests": []}
+    return state
+
+
+def shown(text):
+    """LLM text cites ``[1]``; the finished report shows the footnote marker ``(1)`` at the end of the clause."""
+    return text.replace(" [1]", "(1)")
+
+
+def shown_all(texts):
+    return [shown(text) for text in texts]
+
+
+def chapter(report, heading):
+    return next(section for section in report["sections"] if section["heading"] == heading)["paragraphs"]
+
+
+def test_llm_rewrites_only_the_instructed_section_and_keeps_the_other_llm_text():
+    instruction = {"item": "neutrality", "section": "5. 시사점", "problem": "비교 우위 표현", "quote": "KIVI는 도입 발표가 있어 다른 선택지보다 유리하다 [1].", "fix": "조건을 나란히 서술"}
+    state = reviewed_state("rewrite_report", [instruction])
+    model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
+    report = LLMReportAgent(model)(state)
+    assert model.calls == 1
+    assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]  # not instructed: the previous LLM text stays
+    assert chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2) and "유리하다" not in report["markdown"]
+    assert report["revision"]["number"] == 1 and report["revision"]["applied"][0]["result"] == "rewritten"
+    assert report["llm_sections"] == {"summary": True, "insights": True} and report["generation_mode"] == "llm_assisted"
+
+
+class SchemaModel(FakeModel):
+    """Answers by requested schema, so the report call and the sentence-fix call get their own responses."""
+
+    def __init__(self, responses):
+        super().__init__(None)
+        self.responses = responses
+        self.schemas = []
+
+    def with_structured_output(self, schema, **kwargs):
+        self.schemas.append(schema.__name__)
+        self.response = self.responses[schema.__name__]
+        return self
+
+
+TABLE_INSTRUCTION = {"item": "groundedness", "section": "4.1 시장성", "problem": "근거보다 넓게 일반화", "quote": "서비스 도입", "fix": "근거가 말하는 범위로 좁힌다"}
+
+
+def market_reason(report):
+    table = next(section for section in report["sections"] if section["heading"] == "4.1 시장성")["table"]
+    return next(row for row in table["rows"] if row[0] == "KIVI" and row[1] == "상용화와 채택 현황")[3]
+
+
+def test_flagged_sentence_in_a_rule_based_section_is_rewritten_not_deleted():
+    state = reviewed_state("rewrite_report", [TABLE_INSTRUCTION])
+    model = SchemaModel({"SentenceFixes": {"fixes": [{"index": 0, "replacement": "공개 발표에서 도입이 보고됐다"}]}, "ReportDraft": {"summary": "쓰이지 않는다 [1].", "insights": INSIGHTS_V2}})
+    report = LLMReportAgent(model)(state)
+    assert model.schemas == ["SentenceFixes"]  # SUMMARY and chapter 5 were not instructed: no report call
+    assert market_reason(report) == "공개 발표에서 도입이 보고됐다"
+    assert report["revision"]["applied"] == [{"item": "groundedness", "section": "4.1 시장성", "quote": "서비스 도입", "result": "replaced"}]
+    assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)] and chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V1)
+    assert report["metrics"][0]["purpose"] == "sentence_fix" and report["metrics"][0]["fixes_accepted"] == 1
+    assert report["generation_mode"] == "llm_assisted"
+
+
+def test_rejected_or_dropped_sentence_fix_falls_back_to_removal():
+    for fix in (
+        {"index": 0, "replacement": "KIVI가 더 우수하다"},  # ranking language
+        {"index": 0, "replacement": "2029년에 도입이 보고됐다"},  # number absent from the sentence and its evidence
+        {"index": 0, "replacement": "도입이 보고됐다 [1]"},  # the original sentence carried no citation
+        {"index": 0, "replacement": "서비스 도입"},  # repeats the flagged sentence
+        {"index": 0, "drop": True},
+        {"index": 7, "replacement": "다른 항목"},  # not one of the requested items
+    ):
+        state = reviewed_state("rewrite_report", [TABLE_INSTRUCTION])
+        report = LLMReportAgent(SchemaModel({"SentenceFixes": {"fixes": [fix]}}))(state)
+        assert report["revision"]["applied"][0]["result"] == "removed", fix
+        assert "서비스 도입" not in market_reason(report) and "더 우수" not in report["markdown"] and "2029" not in report["markdown"]
+    failing = reviewed_state("rewrite_report", [TABLE_INSTRUCTION])
+    report = LLMReportAgent(FakeModel(None, fail=RuntimeError("rate limit")))(failing)
+    assert report["revision"]["applied"][0]["result"] == "removed" and report["metrics"][0]["llm_failures"] == 1
+
+
+def test_whole_section_rewrite_and_sentence_fix_are_combined_in_one_revision():
+    chapter_instruction = {"item": "neutrality", "section": "5. 시사점", "quote": "KIVI는 도입 발표가 있어 다른 선택지보다 유리하다", "fix": "조건을 나란히 서술"}
+    state = reviewed_state("rewrite_report", [chapter_instruction, TABLE_INSTRUCTION])
+    model = SchemaModel({"SentenceFixes": {"fixes": [{"index": 1, "replacement": "공개 발표에서 도입이 보고됐다"}]}, "ReportDraft": {"summary": "쓰이지 않는다 [1].", "insights": INSIGHTS_V2}})
+    report = LLMReportAgent(model)(state)
+    assert model.schemas == ["SentenceFixes", "ReportDraft"]
+    assert [record["result"] for record in report["revision"]["applied"]] == ["rewritten", "replaced"]
+    assert chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2) and market_reason(report) == "공개 발표에서 도입이 보고됐다"
+    assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]
+
+
+def test_rewrite_that_repeats_the_flagged_sentence_falls_back_to_the_rule_based_chapter():
+    instruction = {"item": "neutrality", "section": "5. 시사점", "quote": "KIVI는 도입 발표가 있어 다른 선택지보다 유리하다", "fix": "삭제"}
+    state = reviewed_state("rewrite_report", [instruction])
+    report = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1}))(state)
+    assert "repeats a sentence flagged" in report["insights_fallback_reason"] and "유리하다" not in report["markdown"]
+    assert report["llm_sections"] == {"summary": True, "insights": False} and chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]
+
+
+def test_accept_with_limits_keeps_llm_texts_without_calling_the_model():
+    state = reviewed_state("accept_with_limits", [])
+    model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
+    report = LLMReportAgent(model)(state)
+    assert model.calls == 0 and chapter(report, "SUMMARY") == [shown(SUMMARY_V1)] and chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V1)
+    assert any(p.startswith("품질 평가 미달 항목") and "중립성 2점" in p for p in chapter(report, "6. 한계점"))
+
+
+def test_recollect_regenerates_both_llm_sections_with_the_instructions():
+    instruction = {"item": "neutrality", "section": "5. 시사점", "quote": "KIVI는 도입 발표가 있어 다른 선택지보다 유리하다", "fix": "삭제"}
+    state = reviewed_state("recollect", [instruction])
+    model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
+    report = LLMReportAgent(model)(state)
+    assert model.calls == 1 and chapter(report, "SUMMARY") == [shown("KIVI 요약을 새로 썼다 [1].")] and chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2)
+
+
+def test_footnote_markers_go_back_to_bracketed_numbers_but_list_numbers_stay():
+    assert bracketed("정확도는 유지했다(1)(2). 둘째 문장이다(3).") == "정확도는 유지했다 [1] [2]. 둘째 문장이다 [3]."
+    assert bracketed("TRL 3 충족(1); TRL 4 충족(2, 3);") == "TRL 3 충족 [1]; TRL 4 충족 [2] [3];"
+    assert bracketed("(1) 첫 항목이다(2).\n(2) 둘째 항목이다(3).") == "(1) 첫 항목이다 [2].\n(2) 둘째 항목이다 [3]."  # 줄 맨 앞의 (1)·(2)는 목록 번호
+    assert bracketed("설명 | 조건 | (1)(3)") == "설명 | 조건 |  [1] [3]"  # 표 칸에 홀로 있는 표시는 인용이다
+    assert bracketed("KIVI(2024)와 f(1024)") == "KIVI(2024)와 f(1024)"  # 네 자리 이상은 표시가 아니다

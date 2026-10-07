@@ -12,6 +12,12 @@ then ``number_citations`` takes them out of the sentence and puts ``(1)``, ``(2)
 (numbered in order of first appearance) at the end of the clause they belonged to.
 ``report["citation_map"]`` maps each number back to its evidence ID, and the
 footnotes and REFERENCE list only what the body actually cites.
+
+Revisions: when ``state["quality_result"]`` asks for changes, the instructed
+sentences are replaced with a rewritten sentence when the caller supplies one,
+otherwise removed, in the named sections (``apply_instructions``), and
+quality items that stay below the threshold are listed in chapter 6
+(``accept_with_limits``). ``report["revision"]`` records what was done.
 """
 
 from __future__ import annotations
@@ -225,6 +231,179 @@ def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -
     return numbered, {number: identifier for identifier, number in numbers.items()}
 
 
+QUALITY_ITEM_TITLES = {"groundedness": "Groundedness", "neutrality": "중립성", "bias": "편향 통제", "coverage": "관점 커버리지"}
+REVISING_ACTIONS = ("rewrite_report", "recollect")  # actions whose instructions change the report text
+REMOVED_NOTE = "(품질 평가 지적에 따라 해당 문장을 삭제했다.)"
+# One sentence plus the citations that trail it, so a removed sentence takes its citations along.
+SENTENCE = re.compile(r".+?(?:\.(?=\s|$)|$)(?:\s*\[[^\[\]]+\])*\s*", re.S)
+
+
+FOOTNOTE_MARKER = re.compile(r"\(\d{1,3}(?:\s*,\s*\d{1,3})*\)")
+
+
+def plain_text(text: Any) -> str:
+    """Text without bracketed tokens, footnote markers ``(1)(2)`` and extra whitespace.
+
+    Citation numbers, evidence IDs and the markers a built report carries all compare equal, so a quote taken
+    from the finished report (markers at the end of the clause) finds its sentence in the unnumbered sections
+    (raw ``[evidence_id]`` tokens inside the sentence).
+    """
+    plain = " ".join(FOOTNOTE_MARKER.sub(" ", CITATION_TOKEN.sub(" ", str(text or ""))).split())
+    plain = re.sub(r"\s+([.,;:!?)])", r"\1", plain)
+    return re.sub(r"\s*(?:근거|출처)\s*[:：]$", "", plain)  # a "근거: [1] [2]" label is not part of the sentence it follows
+
+
+def revision_plan(state: GraphState) -> dict[str, Any] | None:
+    """What the quality evaluation asks of this report build, or None for a first/accepted build."""
+    quality = state.get("quality_result") or {}
+    action = str(quality.get("action") or "")
+    if action not in (*REVISING_ACTIONS, "accept_with_limits"):
+        return None
+    previous = state.get("report") or {}
+    instructions = [dict(item) for item in quality.get("instructions") or [] if isinstance(item, dict)]
+    return {
+        "action": action,
+        "instructions": instructions if action in REVISING_ACTIONS else [],
+        "number": int((previous.get("revision") or {}).get("number") or 0) + 1,
+    }
+
+
+def _covered(text: str, quote: str) -> tuple[list[str], set[int]]:
+    """Sentence chunks of ``text`` and the indexes ``quote`` covers (a quote may span several sentences)."""
+    chunks = SENTENCE.findall(text)
+    target = plain_text(quote).strip("….")
+    if not target:
+        return chunks, set()
+    # Locate the quote in the citation-free text, then map the match back to sentence chunks.
+    spans: list[tuple[int, int, int]] = []  # (chunk index, start, end) in the joined plain text
+    joined = ""
+    for index, chunk in enumerate(chunks):
+        plain = plain_text(chunk)
+        if not plain:
+            continue
+        start = len(joined) + (1 if joined else 0)
+        joined = f"{joined} {plain}" if joined else plain
+        spans.append((index, start, len(joined)))
+    found = joined.find(target)
+    if found < 0:
+        return chunks, set()
+    covered = {index for index, start, end in spans if start < found + len(target) and end > found}
+    # A chunk that only holds citation tokens (a trailing "근거: [1] [2]") belongs to the sentence before it.
+    for index in sorted(covered):
+        follower = index + 1
+        while follower < len(chunks) and not plain_text(chunks[follower]):
+            covered.add(follower)
+            follower += 1
+    return chunks, covered
+
+
+def _replace_quote(text: str, quote: str, replacement: str = "") -> tuple[str, bool]:
+    """Replace the sentences ``quote`` covers with ``replacement`` (empty: remove them)."""
+    chunks, covered = _covered(text, quote)
+    if not covered:
+        return text, False
+    first = min(covered)
+    parts = [(f"{replacement} " if replacement and index == first else "") if index in covered else chunk for index, chunk in enumerate(chunks)]
+    return "".join(parts).strip(), True
+
+
+def _instruction_sections(sections: list[dict[str, Any]], name: str, handled: frozenset[str]) -> list[dict[str, Any]]:
+    """Sections an instruction applies to: the named one, or every section when the name matches none."""
+    named = any(section["heading"] == name for section in sections)
+    return [section for section in sections if section["heading"] not in handled and (not named or section["heading"] == name)]
+
+
+def locate_instruction(sections: list[dict[str, Any]], instruction: dict[str, Any]) -> dict[str, str] | None:
+    """Find the sentence an instruction quotes: ``{"section", "sentence", "context"}`` (context: its paragraph or table row)."""
+    quote = str(instruction.get("quote") or "")
+    for section in _instruction_sections(sections, str(instruction.get("section") or ""), frozenset()):
+        for paragraph in section.get("paragraphs", []):
+            chunks, covered = _covered(str(paragraph), quote)
+            if covered:
+                return {"section": section["heading"], "sentence": "".join(chunks[index] for index in sorted(covered)).strip(), "context": str(paragraph)}
+        for row in (section.get("table") or {}).get("rows", []):
+            for cell in row:
+                chunks, covered = _covered(str(cell), quote)
+                if covered:
+                    return {"section": section["heading"], "sentence": "".join(chunks[index] for index in sorted(covered)).strip(), "context": " | ".join(str(item) for item in row)}
+    return None
+
+
+def apply_instructions(
+    sections: list[dict[str, Any]],
+    instructions: list[dict[str, Any]],
+    handled: frozenset[str] = frozenset(),
+    replacements: dict[int, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Revise the instructed sentences in their sections.
+
+    ``replacements`` maps an instruction's position to a rewritten sentence
+    (citing raw evidence IDs); without one the sentence is removed. Only the
+    section named by the instruction is changed (every section is searched when
+    the name matches none). Sections in ``handled`` were rewritten as a whole by
+    the LLM and are left alone. Returns the sections and one record per
+    instruction: ``replaced``, ``removed``, ``rewritten``, ``not_found`` or ``no_quote``.
+    """
+    replacements = replacements or {}
+    sections = [{**section, "paragraphs": list(section.get("paragraphs", [])), "table": section.get("table")} for section in sections]
+    applied: list[dict[str, Any]] = []
+    for position, instruction in enumerate(instructions):
+        name = str(instruction.get("section") or "")
+        record = {"item": instruction.get("item"), "section": name, "quote": _clip(instruction.get("quote"), 120)}
+        if name in handled:
+            applied.append({**record, "result": "rewritten"})
+            continue
+        quote = str(instruction.get("quote") or "")
+        if not plain_text(quote).strip("…."):
+            applied.append({**record, "result": "no_quote"})
+            continue
+        replacement = replacements.get(position, "")
+        changed = False
+        for section in _instruction_sections(sections, name, handled):
+            paragraphs = []
+            for paragraph in section["paragraphs"]:
+                text, hit = _replace_quote(paragraph, quote, replacement)
+                changed = changed or hit
+                if text:
+                    paragraphs.append(text)
+            if section["paragraphs"] and not paragraphs:
+                paragraphs = [REMOVED_NOTE]
+            section["paragraphs"] = paragraphs
+            table = section["table"]
+            if table and table.get("rows"):
+                rows = []
+                for row in table["rows"]:
+                    cells = []
+                    for cell in row:
+                        text, hit = _replace_quote(str(cell), quote, replacement)
+                        changed = changed or hit
+                        cells.append((text or REMOVED_NOTE) if hit else cell)
+                    rows.append(cells)
+                section["table"] = {**table, "rows": rows}
+        applied.append({**record, "result": ("replaced" if replacement else "removed") if changed else "not_found"})
+    return sections, applied
+
+
+def _quality_limit_lines(state: GraphState) -> list[str]:
+    """Chapter 6 lines for quality items accepted below the threshold."""
+    quality = state.get("quality_result") or {}
+    if quality.get("action") != "accept_with_limits":
+        return []
+    threshold = quality.get("threshold")
+    failed = []
+    for key, item in (quality.get("items") or {}).items():
+        line = item.get("threshold", threshold) if isinstance(item, dict) else threshold  # an item may carry its own pass line
+        if not isinstance(item, dict) or item.get("score") is None or (line is not None and item["score"] >= line):
+            continue
+        reasons = "; ".join(_clip(reason, 140) for reason in (item.get("reasons") or [])[:2])
+        failed.append(f"{QUALITY_ITEM_TITLES.get(key, key)} {item['score']}점" + (f"({reasons})" if reasons else ""))
+    if not failed:
+        return []
+    return [
+        f"품질 평가 미달 항목: 재작성·재수집 상한에 도달해 통과 기준({threshold}점)에 못 미친 항목을 그대로 둔다. " + "; ".join(failed) + "."
+    ]
+
+
 def _section(heading: str, paragraphs: list[str], table: dict[str, Any] | None = None, level: int = 1) -> dict[str, Any]:
     return {"heading": heading, "paragraphs": [str(item) for item in paragraphs], "table": table, "level": level}
 
@@ -310,19 +489,18 @@ def _technical_section(state: GraphState, layout: Layout = LAYOUTS[0]) -> tuple[
             paragraphs.append(f"{technology}: 기술 조사 결과 미확인")
             continue
         cite = _citations(list(findings.get("evidence_ids") or []), evidence)
-        written = False
+
+        def listed(key: str) -> str:
+            return "; ".join(str(item).strip().rstrip(".") for item in (findings.get(key) or [])[: layout.list_items] if str(item).strip())
+
+        # One paragraph per technology: principle -> experiment conditions -> reported performance -> limitations.
+        parts: list[str] = []
         if findings.get("principle"):
-            paragraphs.append(f"{technology}의 핵심 원리: {findings['principle']}" + (f" 근거: {cite}" if cite else ""))
-            written = True
-        if findings.get("experiment_conditions"):
-            paragraphs.append(f"{technology}의 실험 조건: " + "; ".join(str(item) for item in findings["experiment_conditions"][: layout.list_items]))
-            written = True
-        if findings.get("performance"):
-            paragraphs.append(f"{technology}의 성능 보고: " + "; ".join(str(item) for item in findings["performance"][: layout.list_items]))
-            written = True
-        if findings.get("limitations"):
-            paragraphs.append(f"{technology}의 한계: " + "; ".join(str(item) for item in findings["limitations"][: layout.list_items]))
-            written = True
+            parts.append(f"{technology}의 핵심 원리: " + _clip_sentences(findings["principle"], 150 * layout.list_items).rstrip("."))
+        # Labels keep the wording other tests and readers already rely on ("KIVI의 성능 보고: ...").
+        for key, label in (("experiment_conditions", "실험 조건"), ("performance", "성능 보고"), ("limitations", "한계")):
+            if listed(key):
+                parts.append(f"{technology}의 {label}: {listed(key)}")
         extras = []
         for key, value in findings.items():
             if key in known or value in (None, "", [], {}):
@@ -330,9 +508,10 @@ def _technical_section(state: GraphState, layout: Layout = LAYOUTS[0]) -> tuple[
             rendered = value if isinstance(value, (str, int, float)) else json.dumps(value, ensure_ascii=False, default=str)
             extras.append(f"{key}: {_clip(rendered, 300)}")
         if extras:
-            paragraphs.append(f"{technology}의 추가 조사 항목: " + "; ".join(extras))
-            written = True
-        if not written:
+            parts.append(f"{technology}의 추가 조사 항목: " + "; ".join(extras))
+        if parts:
+            paragraphs.append(". ".join(parts) + "." + (f" 근거: {cite}" if cite else ""))
+        else:
             paragraphs.append(f"{technology}: 구조화된 기술 조사 결과 있음(세부 항목 미기재)")
         for measurement in findings.get("measurements") or []:
             if not isinstance(measurement, dict):
@@ -430,35 +609,147 @@ def _trl_details(state: GraphState) -> list[str]:
     return lines
 
 
-def _synthesis_paragraphs(synthesis: dict[str, Any], evidence: dict[str, Any], layout: Layout = LAYOUTS[0]) -> list[str]:
+def _ref_title(ref: dict[str, Any]) -> str:
+    return f"{PERSPECTIVE_TITLES.get(ref['perspective'], ref['perspective'])}/{FIELD_TITLES.get(ref['field'], ref['field'])}"
+
+
+def _round_robin(pairs: list[dict[str, Any]], technologies: list[str], limit: int) -> list[dict[str, Any]]:
+    """Take up to ``limit`` pairs, alternating technologies so neither one fills the chapter alone."""
+    queues = {technology: [pair for pair in pairs if pair["technology"] == technology] for technology in technologies}
+    picked: list[dict[str, Any]] = []
+    while len(picked) < limit and any(queues.values()):
+        for technology in technologies:
+            if queues[technology] and len(picked) < limit:
+                picked.append(queues[technology].pop(0))
+    return picked
+
+
+def _open_points(state: GraphState, evidence: dict[str, Any]) -> list[str]:
+    """What still has to be confirmed before applying the technologies in the domain."""
+    has_checks, passed = _passed_items(state)
+    conditional: list[str] = []
+    unknown: dict[tuple[str, str], list[str]] = {}
+    for technology in state["run_config"]["technologies"]:
+        for perspective in PERSPECTIVES:
+            for field in LABELS[perspective]:
+                judgment = _judgment(state, perspective, technology, field)
+                supported = judgment is not None and bool(judgment.get("evidence_ids")) and (not has_checks or (perspective, technology, field) in passed)
+                if not supported:
+                    unknown.setdefault((technology, perspective), []).append(FIELD_TITLES[field])
+                elif perspective == "domain" and judgment.get("label") in ("조건부 보고", "높음 보고"):
+                    cite = _citations(list(judgment["evidence_ids"]), evidence)
+                    condition = _clip_sentences(judgment.get("conditions") or "", 90).rstrip(".")
+                    conditional.append(f"{technology} {FIELD_TITLES[field]}({judgment['label']}" + (f", 조건: {condition}" if condition else "") + f"){(' ' + cite) if cite else ''}")
+    points: list[str] = []
+    if conditional:
+        more = f" 외 {len(conditional) - 6}개" if len(conditional) > 6 else ""
+        points.append("자료가 조건을 달아 보고한 항목은 운영 환경의 모델, 문맥 길이, 배치 조건에서 다시 확인해야 한다: " + "; ".join(conditional[:6]) + more + ".")
+    if unknown:
+        described = "; ".join(f"{technology} {PERSPECTIVE_TITLES[perspective]}({', '.join(fields)})" for (technology, perspective), fields in unknown.items())
+        points.append(f"근거를 확인하지 못해 판단을 유보한 항목은 다음과 같다: {described}.")
+    return points
+
+
+def _synthesis_paragraphs(state: GraphState, synthesis: dict[str, Any], evidence: dict[str, Any], layout: Layout = LAYOUTS[0], insights: list[str] | None = None) -> list[str]:
+    """Chapter 5: per-technology conflicts with their conditions, shared patterns, points still to confirm.
+
+    ``insights`` (LLM-written, citing raw evidence IDs) replaces the rule-based body.
+    """
+    technologies = list(state["run_config"]["technologies"])
     conflicts = synthesis.get("conflicts") or []
     agreements = synthesis.get("agreements") or []
     lines = [
-        f"관점 간 상충 쌍 {len(conflicts)}개, 일치 쌍 {len(agreements)}개를 확인했다. 총점이나 순위 대신 각 쌍이 성립하는 조건과 남은 불확실성을 나란히 제시한다."
+        f"관점 간 상충 쌍 {len(conflicts)}개, 일치 쌍 {len(agreements)}개를 확인했다. 총점이나 순위 대신 판정이 엇갈리는 지점과 각 판정이 성립하는 조건을 제시한다."
     ]
-    shown = ((conflicts[: layout.conflicts], "상충"), (agreements[: layout.agreements], "일치"))
-    omitted = len(conflicts) + len(agreements) - sum(len(pairs) for pairs, _ in shown)
+    if insights:
+        return lines + list(insights)
+    shown_conflicts = _round_robin(conflicts, technologies, layout.conflicts)
+    shown_agreements = _round_robin(agreements, technologies, layout.agreements)
+    omitted = len(conflicts) + len(agreements) - len(shown_conflicts) - len(shown_agreements)
     if omitted > 0:
-        lines[0] += f" 분량 제한에 따라 중요도가 높은 쌍부터 {sum(len(pairs) for pairs, _ in shown)}개를 싣고 나머지 {omitted}개는 생략했다."
-    for pairs, title in shown:
-        for pair in pairs:
+        lines[0] += f" 분량 제한에 따라 기술별로 중요도가 높은 쌍부터 {len(shown_conflicts) + len(shown_agreements)}개를 싣고 나머지 {omitted}개는 생략했다."
+    for technology in technologies:
+        parts: list[str] = []
+        for index, pair in enumerate([pair for pair in shown_conflicts if pair["technology"] == technology], start=1):
             first, second = pair["first"], pair["second"]
             cite = _citations(list(first["evidence_ids"]) + list(second["evidence_ids"]), evidence)
-            left = f"{PERSPECTIVE_TITLES.get(first['perspective'], first['perspective'])}/{FIELD_TITLES.get(first['field'], first['field'])}"
-            right = f"{PERSPECTIVE_TITLES.get(second['perspective'], second['perspective'])}/{FIELD_TITLES.get(second['field'], second['field'])}"
-            lines.append(
-                f"[{title}] {pair['technology']}: {left}({first['label']}) 및 {right}({second['label']}). {_clip_sentences(pair['reason'], layout.pair_reason)} "
-                f"성립 조건: {left} '{_clip_sentences(first.get('conditions'), layout.pair_condition) or '조건 미기재'}' / "
-                f"{right} '{_clip_sentences(second.get('conditions'), layout.pair_condition) or '조건 미기재'}'. "
-                f"남은 불확실성: {_clip_sentences(pair['uncertainty'], layout.pair_uncertainty)}" + (f" 근거: {cite}" if cite else "")
+            # Rule-based texts already name both judgments and their conditions; LLM-written ones need them added.
+            header, condition_text = "", ""
+            if pair.get("generation") != "deterministic":
+                header = f"{_ref_title(first)}({first['label']}) – {_ref_title(second)}({second['label']}): "
+                conditions = [_clip_sentences(ref.get("conditions"), layout.pair_condition).rstrip(".") for ref in (first, second)]
+                if any(conditions):
+                    condition_text = f" 성립 조건: '{conditions[0] or '미기재'}' / '{conditions[1] or '미기재'}'."
+            parts.append(
+                f"({index}) {header}{_clip_sentences(pair['reason'], layout.pair_reason)}{condition_text} "
+                f"남은 불확실성: {_clip_sentences(pair['uncertainty'], layout.pair_uncertainty)}{(' ' + cite) if cite else ''}"
             )
+        if parts:
+            lines.append(f"{technology}에서 관점 간 평가가 엇갈리는 지점. " + " ".join(parts))
+        agreed = []
+        for pair in (pair for pair in shown_agreements if pair["technology"] == technology):
+            first, second = pair["first"], pair["second"]
+            cite = _citations(list(first["evidence_ids"]) + list(second["evidence_ids"]), evidence)
+            agreed.append(f"{_ref_title(first)}({first['label']}) – {_ref_title(second)}({second['label']}){(' ' + cite) if cite else ''}")
+        if agreed:
+            lines.append(f"{technology}에서 같은 방향을 가리키는 판정: " + "; ".join(agreed) + ".")
+    # Patterns found in every technology (same pair of rubric items, same relation).
+    shared: list[str] = []
+    for kind, pairs in (("판정이 엇갈리는 조합", conflicts), ("판정이 같은 방향인 조합", agreements)):
+        by_technology = [{(_ref_title(pair["first"]), _ref_title(pair["second"])) for pair in pairs if pair["technology"] == technology} for technology in technologies]
+        common = sorted(set.intersection(*by_technology)) if by_technology and all(by_technology) else []
+        if common:
+            more = f" 외 {len(common) - 2}개" if len(common) > 2 else ""
+            shared.append(f"{kind}은 " + ", ".join(f"{left} – {right}" for left, right in common[:2]) + more)
+    if shared and len(technologies) > 1:
+        lines.append("두 기술에 공통으로 나타나는 패턴: " + "; ".join(shared) + ". 세부 판정과 근거는 4장 표에 있다.")
     if len(lines) == 1:
         lines.append("확인된 근거로 구성할 수 있는 관점 간 쌍이 없다.")
+    points = _open_points(state, evidence)
+    if points:
+        lines.append(f"{state['run_config'].get('domain') or '대상 도메인'}에 적용하기 전에 확인이 필요한 지점. " + " ".join(points))
+    return lines
+
+
+def _coverage_lines(state: GraphState) -> list[str]:
+    """Run facts for chapter 6: how many judgments passed the evidence check, single-source dependence."""
+    evidence = state.get("evidence") or {}
+    sources = state.get("sources") or {}
+    has_checks, passed = _passed_items(state)
+    lines: list[str] = []
+    if has_checks:
+        total = len((state.get("evidence_check") or {}).get("items") or [])
+        lines.append(f"근거 검사: 판정 항목 {total}개 중 {len(passed)}개가 근거 확인을 통과했다. 통과하지 못한 항목은 4장 표에 (근거 미확인)으로 표시했다.")
+    supported = 0
+    single: dict[str, int] = {}
+    self_reported = 0
+    for perspective in PERSPECTIVES:
+        for technology in state["run_config"]["technologies"]:
+            for field in LABELS[perspective]:
+                judgment = _judgment(state, perspective, technology, field)
+                if judgment is None or (has_checks and (perspective, technology, field) not in passed):
+                    continue
+                used = {evidence[identifier].get("source_id") for identifier in judgment.get("evidence_ids") or [] if identifier in evidence}
+                if not used:
+                    continue
+                supported += 1
+                if len(used) == 1:
+                    single[perspective] = single.get(perspective, 0) + 1
+                    source = sources.get(next(iter(used))) or {}
+                    if perspective == "domain" and str(source.get("source_type") or "").lower() == "paper":
+                        self_reported += 1
+    if single:
+        described = ", ".join(f"{PERSPECTIVE_TITLES[name]} {count}개" for name, count in single.items())
+        line = f"단일 출처 의존: 근거가 확인된 판정 {supported}개 중 {sum(single.values())}개가 출처 한 곳에만 근거한다({described})."
+        if self_reported:
+            line += f" 이 가운데 도메인 적용 판정 {self_reported}개는 해당 기술 논문의 자체 보고이며, 저자가 아닌 제3자의 재현으로 확인된 결과가 아니다."
+        lines.append(line)
     return lines
 
 
 def _limitations(state: GraphState, synthesis: dict[str, Any]) -> list[str]:
-    limits = list(synthesis.get("limitations") or [])
+    limits = _quality_limit_lines(state) + _coverage_lines(state)
+    limits.extend(synthesis.get("limitations") or [])
     limits.extend(limitation_lines(state))
     grouped: dict[tuple[str, str, str], list[str]] = {}
     samples: dict[tuple[str, str, str], str] = {}
@@ -546,7 +837,14 @@ def format_reference(label: str, source: dict[str, Any]) -> str:
     return f"[{label}] {text}"
 
 
-def _compose(state: GraphState, summary: list[str] | None, layout: Layout) -> dict[str, Any]:
+def _compose(
+    state: GraphState,
+    summary: list[str] | None,
+    layout: Layout,
+    insights: list[str] | None = None,
+    handled: frozenset[str] = frozenset(),
+    replacements: dict[int, str] | None = None,
+) -> dict[str, Any]:
     """One report build under a given length budget."""
     config = state["run_config"]
     technologies = config["technologies"]
@@ -580,8 +878,14 @@ def _compose(state: GraphState, summary: list[str] | None, layout: Layout) -> di
             paragraphs.append("이 관점의 결과가 생성되지 않았다. 6장 한계점의 실행 오류를 참고한다.")
         rows = _judgment_rows(state, name, passed, has_checks, layout)
         sections.append(_section(f"4.{index} {PERSPECTIVE_TITLES[name]}", paragraphs, {"columns": JUDGMENT_COLUMNS, "rows": rows}, level=2))
-    sections.append(_section("5. 시사점", _synthesis_paragraphs(synthesis, evidence, layout)))
+    sections.append(_section("5. 시사점", _synthesis_paragraphs(state, synthesis, evidence, layout, insights)))
     sections.append(_section("6. 한계점", _limitations(state, synthesis)))
+
+    # Quality-evaluation instructions are applied before numbering so removed sentences take their citations along.
+    plan = revision_plan(state)
+    applied: list[dict[str, Any]] = []
+    if plan and plan["instructions"]:
+        sections, applied = apply_instructions(sections, plan["instructions"], handled, replacements)
 
     # Number the body first: the footnotes and REFERENCE list only what the body cites.
     sections, citation_map = number_citations(sections, evidence)
@@ -606,13 +910,24 @@ def _compose(state: GraphState, summary: list[str] | None, layout: Layout) -> di
         "citation_map": citation_map,
         "used_source_ids": used_source_ids,
         "generation_mode": "deterministic",
+        "revision": {"number": plan["number"], "action": plan["action"], "applied": applied} if plan else {"number": 0},
     }
 
 
-def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict[str, Any]:
+def build_report(
+    state: GraphState,
+    *,
+    summary: list[str] | None = None,
+    insights: list[str] | None = None,
+    handled: frozenset[str] = frozenset(),
+    replacements: dict[int, str] | None = None,
+) -> dict[str, Any]:
     """Build the report within the page limit.
 
-    ``summary`` replaces the rule-based SUMMARY; it cites raw evidence IDs. The
+    ``summary`` replaces the rule-based SUMMARY and ``insights`` the rule-based
+    body of chapter 5; both cite raw evidence IDs. ``handled`` names sections
+    the caller already rewrote for the quality instructions and ``replacements``
+    maps an instruction's position to its rewritten sentence. The
     report is laid out with the roomiest budget first and rebuilt with tighter
     ones while the rendered PDF exceeds ``MAX_PDF_PAGES``. ``report["layout"]``
     records the level used, the page count and whether it fits.
@@ -620,7 +935,7 @@ def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict
     report: dict[str, Any] = {}
     pages = 0
     for layout in LAYOUTS:
-        report = _compose(state, summary, layout)
+        report = _compose(state, summary, layout, insights, handled, replacements)
         pages = pdf_page_count(report)
         if pages <= MAX_PDF_PAGES:
             break
