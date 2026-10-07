@@ -57,6 +57,10 @@ BALANCE_GAP_CAP = (0.60, 2)  # 기술별 긍정 비율 차이가 이 값 이상�
 BALANCE_MIN_JUDGMENTS = 4  # 위 비교는 두 기술 모두 긍정·신중 판정이 이 수 이상일 때만 한다
 
 MAX_INSTRUCTIONS = 10
+# Groundedness Judge 점수와 수정 지시에 반영하는 장(묶음 키). 보고서 작성기가 직접 쓰는 SUMMARY와 5장이다.
+# 3장(기술 조사 결과를 그대로 옮김)과 4장(판정 표, 판정마다 근거 검사의 검토 LLM을 이미 통과)은 작성기가 고칠 수 없어
+# 재작성 요청이 헛돌므로, Judge는 호출하되 지적을 점수와 수정 지시 없이 reasons에 참고로만 남긴다.
+JUDGE_SCORED_CHAPTERS = ("SUMMARY", "5")
 MAX_UNITS_PER_CALL = 14  # Groundedness Judge 호출 하나가 보는 문장·행 수
 EVIDENCE_PER_UNIT = 4
 QUOTE_LIMIT = 300
@@ -1095,7 +1099,7 @@ class QualityEvaluator:
         scores: list[int] = []
         for verdict in verdicts:
             kept, dropped = self._verified(verdict, parsed, item)
-            outcome.issues.extend(kept)
+            outcome.issues.extend(issue for issue in kept if issue not in outcome.issues)
             if dropped:
                 outcome.reasons.append(f"{title} Judge가 지적한 문장 {dropped}건이 보고서에 없어 버림")
             if verdict.issues and not kept:
@@ -1116,10 +1120,14 @@ class QualityEvaluator:
             if unit.ids and unit.claim:
                 match = re.match(r"(\d+)\.", unit.section)
                 groups.setdefault(match.group(1) if match else unit.section, []).append(unit)
-        batches = [units[start : start + MAX_UNITS_PER_CALL] for units in groups.values() for start in range(0, len(units), MAX_UNITS_PER_CALL)]
-        verdicts: list[JudgeVerdict] = []
-        failures = 0
-        for batch in batches[:budget]:
+        batches = [
+            (key, units[start : start + MAX_UNITS_PER_CALL]) for key, units in groups.items() for start in range(0, len(units), MAX_UNITS_PER_CALL)
+        ]
+        batches.sort(key=lambda batch: batch[0] not in JUDGE_SCORED_CHAPTERS)  # 점수에 쓰는 묶음을 먼저(예산이 모자라면 참고용이 밀린다)
+        scored: list[JudgeVerdict] = []
+        reference: list[tuple[str, JudgeVerdict]] = []
+        failures = reference_failures = 0
+        for key, batch in batches[:budget]:
             payload = {
                 "task": "각 문장이 인용한 근거 구절로 뒷받침되는지 평가한다",
                 "sentences": [
@@ -1136,10 +1144,32 @@ class QualityEvaluator:
             }
             verdict = self._call("groundedness_judge", JUDGE_GROUNDEDNESS_PROMPT, payload, events)
             if verdict is None:
-                failures += 1
+                if key in JUDGE_SCORED_CHAPTERS:
+                    failures += 1
+                else:
+                    reference_failures += 1
+            elif key in JUDGE_SCORED_CHAPTERS:
+                scored.append(verdict)
             else:
-                verdicts.append(verdict)
-        return self._outcome(verdicts, parsed, "groundedness", "Groundedness", failures, max(len(batches) - budget, 0))
+                reference.append((key, verdict))
+        outcome = self._outcome(scored, parsed, "groundedness", "Groundedness", failures, max(len(batches) - budget, 0))
+        for key, verdict in reference:
+            outcome.reasons.extend(self._reference_notes(key, verdict, parsed))
+        if reference_failures:
+            outcome.reasons.append(f"참고용 Groundedness Judge 호출 {reference_failures}건 실패")
+        return outcome
+
+    def _reference_notes(self, key: str, verdict: JudgeVerdict, parsed: Parsed) -> list[str]:
+        """점수에 쓰지 않는 장의 Judge 지적을 reasons에 남길 문장으로 만든다. 지적한 문장이 보고서에 있는 것만 센다."""
+        kept, _ = self._verified(verdict, parsed, "groundedness")
+        score = max(1, min(5, int(verdict.score)))
+        if not kept and score >= 5:
+            return []
+        chapter = f"{key}장" if key.isdigit() else key
+        note = f"참고(점수·수정 지시에 반영 안 함) {chapter}: Judge {score}점, 확인된 지적 {len(kept)}건"
+        if kept:
+            note += f" — {_clip(kept[0]['problem'], 110)} (예: '{_clip(kept[0]['quote'], 60)}')"
+        return [note]
 
     def _judge_neutrality(self, parsed: Parsed, events: list[dict[str, Any]]) -> Outcome:
         sections: dict[str, list[str]] = {}

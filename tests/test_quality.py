@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from copy import deepcopy
 
@@ -543,3 +544,76 @@ def test_empty_quote_column_from_the_length_budget_is_not_a_mismatch():
         row[-1] = ""  # 쪽수 제한으로 인용 구절 칸을 비운 판
     result, _, _ = evaluate(state)
     assert result["items"]["groundedness"]["score"] == 5
+
+
+# ── Judge 점수에 반영하는 장 ──
+class ChapterJudge(FakeModel):
+    """``low`` 장의 묶음에는 낮은 점수와 그 묶음의 첫 문장에 대한 지적을, 나머지에는 5점을 주는 가짜 Judge."""
+
+    def __init__(self, low: tuple[str, ...], score: int = 2):
+        super().__init__({})
+        self.low, self.score = low, score
+        self.seen: list[str] = []  # 호출마다 묶음이 속한 장
+
+    def invoke(self, messages):
+        self.calls += 1
+        payload = json.loads(messages[1].content)
+        sentences = payload.get("sentences") or []
+        chapter = sentences[0]["section"] if sentences else ""
+        self.seen.append(chapter)
+        if any(chapter.startswith(prefix) for prefix in self.low):
+            return {"score": self.score, "reasons": ["구절보다 넓게 서술함"], "issues": [{"quote": sentences[0]["text"], "problem": "근거 구절에 없는 서술", "fix": "구절 범위로 줄임"}]}
+        return {"score": 5, "reasons": [], "issues": []}
+
+
+def state_with_cited_chapter_five() -> dict:
+    state = make_state()
+    add_paragraph(state, "5.", "KIVI는 대부분의 시나리오에서 보고됐다(1).")
+    return state
+
+
+def test_judge_flags_in_chapters_three_and_four_are_noted_but_not_scored():
+    state = state_with_cited_chapter_five()
+    judge = ChapterJudge(low=("3.", "4."))
+    result, _, _ = evaluate(state, judge_model=judge)
+    item = result["items"]["groundedness"]
+    assert item["llm_score"] == 5 and item["score"] == 5 and result["passed"] and result["action"] == "pass"
+    assert result["instructions"] == []  # 작성기가 못 고치는 장이라 수정 지시를 만들지 않는다
+    notes = [reason for reason in item["reasons"] if reason.startswith("참고(점수·수정 지시에 반영 안 함)")]
+    assert any("3장" in note for note in notes) and any("4장" in note for note in notes)
+    assert any(chapter.startswith("3.") for chapter in judge.seen) and any(chapter.startswith("4.") for chapter in judge.seen)  # Judge는 호출한다
+
+
+def test_judge_flags_in_summary_and_chapter_five_are_scored_and_become_instructions():
+    for chapter, heading in (("SUMMARY", "SUMMARY"), ("5.", "5. 시사점")):
+        result, _, _ = evaluate(state_with_cited_chapter_five(), judge_model=ChapterJudge(low=(chapter,)))
+        item = result["items"]["groundedness"]
+        assert item["llm_score"] == 2 and item["score"] == 2 and not result["passed"] and result["action"] == "rewrite_report"
+        assert any(entry["section"] == heading and entry["problem"] == "근거 구절에 없는 서술" for entry in result["instructions"])
+        assert not any(reason.startswith("참고(") for reason in item["reasons"])
+
+
+def test_a_short_judge_budget_goes_to_the_chapters_that_count():
+    judge = ChapterJudge(low=("5.",))
+    result, _, _ = evaluate(state_with_cited_chapter_five(), judge_model=judge, max_judge_calls=3)  # 중립성 1회를 빼면 Groundedness는 2회
+    called = [chapter for chapter in judge.seen if chapter]
+    assert len(called) == 2 and called[0] == "SUMMARY" and called[1].startswith("5.")  # 3·4장보다 5장이 먼저 호출된다
+    assert result["items"]["groundedness"]["llm_score"] == 2 and result["action"] == "rewrite_report"
+    assert any("호출 예산 때문에" in reason for reason in result["items"]["groundedness"]["reasons"])
+
+
+def test_a_failed_reference_call_does_not_touch_the_score():
+    class FailsOnReference(ChapterJudge):
+        def invoke(self, messages):
+            payload = json.loads(messages[1].content)
+            sentences = payload.get("sentences") or []
+            if sentences and sentences[0]["section"].startswith(("3.", "4.")):
+                self.calls += 1
+                raise RuntimeError("boom")
+            return super().invoke(messages)
+
+    result, metrics, _ = evaluate(state_with_cited_chapter_five(), judge_model=FailsOnReference(low=()))
+    item = result["items"]["groundedness"]
+    assert item["llm_score"] == 5 and result["passed"]
+    assert any("참고용 Groundedness Judge 호출" in reason and "실패" in reason for reason in item["reasons"])
+    assert any(event.get("judge_errors") for event in metrics)

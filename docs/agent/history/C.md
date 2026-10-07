@@ -163,3 +163,25 @@
 - `_rework`의 편향 통제 조건을 없애지 않는다. 없애면 한계점 문장 하나가 빠진 경우에도 재수집을 돌려 같은 결과만 반복한다
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 110 passed, `pytest -q` 134 passed, `app.py --mode replay --fixture` 정상. 항목별 통과선을 지우는 변이는 테스트가 잡는다. 실제 replay State(현재 `supervisor` 기준 보고서): 편향 통제 2점(도메인 단일 출처를 한계점에 밝히지 않아서), `rewrite_report`, 재수집 요청 0건. 6장에 도메인 단일 출처를 밝히면 Groundedness 5, 중립성 5, 편향 통제 3(통과), 관점 커버리지 4로 `pass`다.
+
+## 2026-10-07 15:00 · sup/quality · piso
+
+**무엇을**: Groundedness LLM Judge의 점수와 수정 지시에는 SUMMARY와 5장 묶음만 반영하고, 3장·4장 묶음은 Judge를 호출하되 지적을 `reasons`에 참고로만 남기도록 바꿨다.
+
+**왜**: 실제 보고서에서 Groundedness 미달의 원인이 3장 묶음 하나였다(여러 번 돌려도 가장 낮거나 공동 최저). 3장은 기술 조사 결과를 그대로 옮긴 글이라 보고서 작성기가 고칠 수 없어서, `rewrite_report`가 반복돼도 같은 결과만 나오고 재작성 호출만 낭비된다. 4장은 판정마다 근거 검사의 검토 LLM을 이미 통과했고 그 문장도 작성기가 만들지 않는다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/quality.py`
+  - `JUDGE_SCORED_CHAPTERS = ("SUMMARY", "5")`: 점수와 수정 지시에 반영하는 장. 이 목록 밖의 장은 지적이 `items["groundedness"]["reasons"]`에 `참고(점수·수정 지시에 반영 안 함) 3장: Judge 3점, 확인된 지적 2건 — …` 형태로만 남고 `llm_score`와 `instructions`에는 들어가지 않는다
+  - `QualityEvaluator._judge_groundedness`: 점수에 쓰는 묶음을 먼저 호출하게 정렬(호출 예산이 모자라면 참고용이 밀린다). 참고용 묶음의 호출 실패는 점수에 영향이 없고 `reasons`에만 남는다. `_reference_notes` 추가. `_outcome`은 여러 묶음에서 같은 지적이 나오면 수정 지시를 한 번만 만든다
+- `tests/test_quality.py` — 장별로 다르게 답하는 가짜 Judge로 4개 추가(45개)
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- 트랙 A·D: `quality_result`의 구조는 같다. 3·4장 지적은 보고서에 나타나지 않고 `quality_result`(`run_manifest.json`에 기록되는 경우)에만 남는다. 이 지적을 보고서 6장에 싣고 싶으면 트랙 D가 `quality_result["items"]["groundedness"]["reasons"]` 중 "참고(" 로 시작하는 문장을 6장 한계점에 옮겨 적으면 된다
+- SUMMARY와 5장이 보고서 작성기가 직접 쓰는 장이라는 가정이다. 현재 `supervisor`에서는 5장의 쌍 문장을 종합 단계가 만들고, `sup/report-insights`가 합쳐지면 보고서 작성기(LLM)가 5장을 쓴다. 작성기가 쓰는 장이 바뀌면 `JUDGE_SCORED_CHAPTERS`를 맞춘다
+
+**충돌 시 지켜야 할 것**: `_judge_groundedness`의 점수용·참고용 분리를 합치지 않는다. 합치면 작성기가 고칠 수 없는 3장 때문에 재작성 요청이 반복된다.
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents`, `pytest -q`, `app.py --mode replay --fixture` 통과. 점수 반영 장 목록을 전체로 바꾸는 변이와 정렬을 끄는 변이를 각각 테스트가 잡는다. 실제 Judge(`gpt-5.4-mini`) 6회 호출: 3장·4장 지적이 참고로만 남고 수정 지시는 SUMMARY와 5장에만 붙었다. 이 실행에서는 SUMMARY·5장 묶음 중 하나가 2점을 줘서 Groundedness는 여전히 미달이었다(작성기가 고칠 수 있는 장이다). Judge 점수는 실행마다 한 단계쯤 흔들린다.
