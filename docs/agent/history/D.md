@@ -171,3 +171,39 @@
 - `revision_plan`은 `action == "pass"`와 평가 결과 없음을 똑같이 "수정 없음"으로 다룬다. 이 판정을 바꾸면 첫 보고서 생성 때 이전 판을 찾으려다 실패한다
 
 **확인**: pytest 83 passed, `app.py --mode replay --fixture` 실행 정상
+
+## 2026-10-07 14:57 · sup/report-layout · deogi
+
+**무엇을**: 보고서 PDF·HTML의 조판을 보고서 양식으로 변경. 문장 내용과 섹션 데이터 구조는 그대로
+
+**왜**: 제목 아래에 실행 정보(모드, 생성 방식, 실행 시각)가 찍히고, 격자 표와 "근거: [1]" 표지, 줄줄이 나열된 인용 번호(`[1] [2] … [8]`) 때문에 프로그램 출력물처럼 보이고 읽기 어려웠다. 제출용 보고서로 읽히도록 조판만 바꾼다. 글꼴은 컴퓨터마다 달라지지 않도록 패키지에 포함한다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `_write_pdf(target, report, meta, as_of="")`: `as_of` 인자 추가. 글꼴은 Pretendard 한 종류(본문·표 Regular, 제목·표 머리행·표 제목 SemiBold), 본문 양쪽 정렬, 줄 간격 16pt. 제목 아래에는 기준일만 두고, 실행 정보(`meta`)는 문서 맨 끝에 작은 글씨("생성 정보: …")로 옮김. 표는 세로줄 없이 가로줄만(위·아래 굵게, 머리행 아래 중간, 행 사이 가는 선). 쪽 번호 추가(`_page_number`)
+  - `BUNDLED_FONT`, `BUNDLED_BOLD_FONT`, `_register_bold_font` 추가: 패키지에 포함한 Pretendard를 시스템 글꼴보다 먼저 사용. 순서는 `RAG_PDF_FONT` → 포함 글꼴 → 시스템 글꼴 → CID 글꼴. `RAG_PDF_FONT`로 본문 글꼴을 바꾸면 제목도 그 글꼴을 씀
+  - `compact_citations` 추가: 그릴 때만 이웃한 인용 번호를 묶음(`[1] [2] [3] [5]` → `[1–3, 5]`). PDF와 HTML에 적용, 섹션 데이터와 Markdown은 번호마다 대괄호 하나 그대로
+  - `table_captions(sections)`, `TABLE_CAPTIONS` 추가: 표가 있는 섹션에 "표 n. …" 제목을 렌더링 단계에서 붙임
+  - `pdf_page_count`: 실제 렌더링과 같은 줄 수가 되도록 `META_PLACEHOLDER`와 기준일을 넣어 쪽수를 셈
+  - `LAYOUTS`에 수준 3 추가(분량 여유분)
+  - `_technical_section`: 문단 끝의 "근거: [..]" 표지를 없애고 인용을 마지막 문장 뒤(마침표 앞)에 붙임
+  - `save_outputs`: `meta`에서 기준일을 빼 `as_of`로 따로 전달, HTML 템플릿에 `as_of`·`captions` 전달
+- `src/skala_rag/templates/report.html.j2` — PDF와 같은 구성(Pretendard, 기준일, 표 제목, 가로줄 표, 인용 번호 묶기, 맨 끝 생성 정보). 목차 `<nav>` 삭제
+- `src/skala_rag/assets/fonts/` (신규) — `Pretendard-Regular.ttf`, `Pretendard-SemiBold.ttf`(Pretendard 1.3.9 배포본의 TTF), `OFL.txt`(SIL Open Font License 1.1 전문)
+- `tests/test_output.py` — 3장 문단 기대 문자열 한 곳 수정, 인용 번호 묶기 테스트 추가
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- `report["sections"]`의 구조와 장 제목은 그대로다. 표 제목, 글꼴, 쪽 번호, 생성 정보는 렌더링 단계에서만 붙는다(Markdown 출력에는 없음)
+- 3장 문단 끝이 "… 근거: [1]"에서 "… [1]."로 바뀜. 항목 표지(`KIVI의 성능 보고:` 등)는 그대로
+
+**충돌 시 지켜야 할 것**:
+- 표 제목·쪽 번호·생성 정보를 `report["sections"]` 데이터에 넣지 않는다. 섹션 데이터를 읽는 다른 코드(품질 평가)가 본문으로 오인한다
+- `pdf_page_count`와 `save_outputs`는 같은 `_write_pdf`를 같은 줄 수의 `meta`·`as_of`로 불러야 한다. 한쪽만 바꾸면 10쪽 맞춤이 실제 PDF와 어긋난다
+- 제목 아래에 작성자·실행 정보를 다시 넣지 않는다(작성자 표기는 과제 요구 사항이 아니어서 넣지 않기로 함)
+- 인용 번호 묶기를 `report["sections"]` 데이터에 적용하지 않는다. `[1–3]`은 번호 대응표(`citation_map`)에서 찾을 수 없어 없는 근거로 처리된다
+- `assets/fonts/OFL.txt`를 글꼴과 함께 둔다. 라이선스가 글꼴 재배포 시 라이선스 문서 동봉을 요구한다
+- 글꼴 파일은 TTF여야 한다. PDF 도구(reportlab)가 OTF(CFF 윤곽선)를 넣지 못한다
+
+**확인**: pytest 84 passed. fixture 5쪽, 근거 60건·출처 20개 9쪽(수준 1), 근거 90건·출처 30개 10쪽(수준 2). PDF 육안 확인

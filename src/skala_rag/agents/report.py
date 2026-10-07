@@ -34,13 +34,13 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from skala_rag.graph.schemas import FIELD_TITLES, LABELS, PERSPECTIVE_TITLES, PERSPECTIVES, TRL_DISCLAIMER
 from skala_rag.graph.state import GraphState, aggregate_metrics, collect_conflicts
@@ -75,6 +75,7 @@ LAYOUTS = (
     Layout(0, conflicts=4, agreements=2, pair_reason=320, pair_uncertainty=220, pair_condition=120, cell_reason=200, cell_conditions=140, quote=110, list_items=4),
     Layout(1, conflicts=3, agreements=1, pair_reason=260, pair_uncertainty=180, pair_condition=90, cell_reason=150, cell_conditions=100, quote=70, list_items=3),
     Layout(2, conflicts=2, agreements=0, pair_reason=200, pair_uncertainty=140, pair_condition=60, cell_reason=110, cell_conditions=70, quote=0, list_items=2),
+    Layout(3, conflicts=2, agreements=0, pair_reason=150, pair_uncertainty=100, pair_condition=40, cell_reason=80, cell_conditions=45, quote=0, list_items=1),
 )
 SMALL_SECTIONS = ("부록. 근거 목록", "REFERENCE")  # rendered in the small font
 KEY_FIELDS = (("market", "adoption"), ("stakeholder", "adopter_view"), ("domain", "memory"), ("trl", "trl"))
@@ -111,7 +112,12 @@ FONT_CANDIDATES = (
 )
 FALLBACK_CID_FONT = "HYSMyeongJo-Medium"
 CITATION_TOKEN = re.compile(r"\[([^\[\]]+)\]")
+# Pretendard (SIL OFL 1.1, license in assets/fonts/OFL.txt) ships with the package so every machine renders the same PDF.
+BUNDLED_FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+BUNDLED_FONT = BUNDLED_FONT_DIR / "Pretendard-Regular.ttf"
+BUNDLED_BOLD_FONT = BUNDLED_FONT_DIR / "Pretendard-SemiBold.ttf"
 _FONT_NAME: str | None = None
+_BOLD_FONT_NAME: str | None = None
 
 
 def _redact(value: Any) -> Any:
@@ -440,7 +446,7 @@ def _technical_section(state: GraphState, layout: Layout = LAYOUTS[0]) -> tuple[
         if extras:
             parts.append(f"{technology}의 추가 조사 항목: " + "; ".join(extras))
         if parts:
-            paragraphs.append(". ".join(parts) + "." + (f" 근거: {cite}" if cite else ""))
+            paragraphs.append(". ".join(parts) + (f" {cite}" if cite else "") + ".")
         else:
             paragraphs.append(f"{technology}: 구조화된 기술 조사 결과 있음(세부 항목 미기재)")
         for measurement in findings.get("measurements") or []:
@@ -888,13 +894,14 @@ def render_markdown(sections: list[dict[str, Any]]) -> str:
 
 
 def _register_korean_font() -> str:
-    """Embed a Korean TrueType font when one is available; fall back to the CID font."""
+    """Embed the body font: ``RAG_PDF_FONT``, then the bundled Pretendard, then system fonts, then the CID font."""
     global _FONT_NAME
     if _FONT_NAME:
         return _FONT_NAME
     candidates: list[str] = []
     if os.environ.get("RAG_PDF_FONT"):
         candidates.append(os.environ["RAG_PDF_FONT"])
+    candidates.append(str(BUNDLED_FONT))
     candidates.extend(FONT_CANDIDATES)
     candidates.extend(glob.glob("/System/Library/AssetsV2/com_apple_MobileAsset_Font*/*/AssetData/NanumGothic.ttc"))
     for candidate in candidates:
@@ -916,6 +923,22 @@ def _register_korean_font() -> str:
     return _FONT_NAME
 
 
+def _register_bold_font() -> str:
+    """Heading weight of the bundled font; the body font when it is unavailable or the body font was overridden."""
+    global _BOLD_FONT_NAME
+    if _BOLD_FONT_NAME is not None:
+        return _BOLD_FONT_NAME
+    body = _register_korean_font()
+    _BOLD_FONT_NAME = body
+    if not os.environ.get("RAG_PDF_FONT") and BUNDLED_BOLD_FONT.is_file():
+        try:
+            pdfmetrics.registerFont(TTFont("KoreanBold", str(BUNDLED_BOLD_FONT)))
+            _BOLD_FONT_NAME = "KoreanBold"
+        except Exception as exc:
+            logger.warning("PDF heading font %s unusable: %s", BUNDLED_BOLD_FONT, exc)
+    return _BOLD_FONT_NAME
+
+
 def _column_weights(columns: list[str]) -> list[float]:
     weights = {
         "기술": 1.0, "항목": 1.3, "판정": 1.3, "판정 이유": 2.6, "성립 조건": 2.0, "근거": 1.4,
@@ -926,56 +949,137 @@ def _column_weights(columns: list[str]) -> list[float]:
     return [weights.get(column, 1.5) for column in columns]
 
 
+TABLE_CAPTIONS = {
+    "2. 기술 선정": "두 기술의 비교 축",
+    "3. 기술 개요": "논문이 보고한 성능 수치",
+    "부록. 근거 목록": "본문에 인용한 근거",
+}
+META_PLACEHOLDER = "모드 replay · 생성 방식 deterministic · 실행 시각 0000-00-00T00:00:00"  # same length as a real line, for page counting
+
+
+CITATION_RUN = re.compile(r"\[\d+\](?:\s*\[\d+\])+")
+
+
+def compact_citations(text: Any) -> str:
+    """Merge adjacent citation numbers for display: ``[1] [2] [3] [5]`` -> ``[1–3, 5]``.
+
+    Rendering only. The section data keeps one bracket per citation so each
+    number can be looked up in ``citation_map``.
+    """
+
+    def merge(match: re.Match[str]) -> str:
+        numbers = sorted({int(number) for number in re.findall(r"\d+", match.group(0))})
+        parts: list[str] = []
+        start = previous = numbers[0]
+        for number in numbers[1:] + [None]:
+            if number is not None and number == previous + 1:
+                previous = number
+                continue
+            if previous - start >= 2:
+                parts.append(f"{start}–{previous}")
+            else:
+                parts.extend(str(value) for value in range(start, previous + 1))
+            if number is not None:
+                start = previous = number
+        return "[" + ", ".join(parts) + "]"
+
+    return CITATION_RUN.sub(merge, str(text))
+
+
+def table_captions(sections: list[dict[str, Any]]) -> dict[int, str]:
+    """``{section index: "표 n. ..."}`` for every section with a table. Rendering only: the section data is not changed."""
+    captions: dict[int, str] = {}
+    for index, section in enumerate(sections):
+        table = section.get("table")
+        if not table or not table.get("rows"):
+            continue
+        heading = section["heading"]
+        title = TABLE_CAPTIONS.get(heading) or re.sub(r"^[\d.]+\s*", "", heading) + " 관점 판정"
+        captions[index] = f"표 {len(captions) + 1}. {title}"
+    return captions
+
+
 def pdf_page_count(report: dict[str, Any]) -> int:
     """Pages the report takes as a PDF (rendered in memory)."""
-    return _write_pdf(io.BytesIO(), report, "")[1]
+    return _write_pdf(io.BytesIO(), report, META_PLACEHOLDER, as_of="0000-00-00")[1]
 
 
-def _write_pdf(target: Path | io.BytesIO, report: dict[str, Any], meta: str) -> tuple[str, int]:
-    """Render the PDF to a path or buffer. Returns ``(font name, page count)``."""
+def _page_number(canvas: Any, document: Any) -> None:
+    canvas.saveState()
+    canvas.setFont(_register_korean_font(), 8)
+    canvas.setFillColor(colors.HexColor("#555555"))
+    canvas.drawCentredString(A4[0] / 2, 26, str(document.page))
+    canvas.restoreState()
+
+
+def _write_pdf(target: Path | io.BytesIO, report: dict[str, Any], meta: str, as_of: str = "") -> tuple[str, int]:
+    """Render the PDF to a path or buffer. Returns ``(font name, page count)``.
+
+    Report layout: one font family (regular body, heavier headings), the title
+    with the reference date, captioned tables ruled with horizontal lines only,
+    page numbers, and the run information (``meta``) in small print at the end.
+    """
     font = _register_korean_font()
+    bold = _register_bold_font()
     base = getSampleStyleSheet()["BodyText"]
-    body = ParagraphStyle("KoreanBody", parent=base, fontName=font, fontSize=9.5, leading=15, wordWrap="CJK", spaceAfter=6)
-    cell = ParagraphStyle("KoreanCell", parent=body, fontSize=7.5, leading=10, spaceAfter=0)
-    small = ParagraphStyle("KoreanSmall", parent=body, fontSize=7.5, leading=10.5, spaceAfter=3)
-    heading1 = ParagraphStyle("KoreanH1", parent=body, fontSize=14, leading=20, spaceBefore=14, spaceAfter=8)
-    heading2 = ParagraphStyle("KoreanH2", parent=body, fontSize=11.5, leading=16, spaceBefore=10, spaceAfter=6)
-    title_style = ParagraphStyle("KoreanTitle", parent=heading1, fontSize=17, leading=24, alignment=TA_CENTER, spaceAfter=4)
-    meta_style = ParagraphStyle("KoreanMeta", parent=body, fontSize=8, alignment=TA_CENTER, textColor=colors.HexColor("#555555"), spaceAfter=12)
-    story: list[Any] = [Paragraph(escape(report["title"]), title_style), Paragraph(escape(meta), meta_style)]
+    ink = colors.HexColor("#1f2933")
+    body = ParagraphStyle("KoreanBody", parent=base, fontName=font, fontSize=9.3, leading=16, wordWrap="CJK", alignment=TA_JUSTIFY, textColor=ink, spaceAfter=4)
+    cell = ParagraphStyle("KoreanCell", parent=base, fontName=font, fontSize=7.5, leading=10.5, wordWrap="CJK", textColor=ink, spaceAfter=0)
+    head_cell = ParagraphStyle("KoreanHeadCell", parent=cell, fontName=bold)
+    small = ParagraphStyle("KoreanSmall", parent=cell, leading=10.5, spaceAfter=3)
+    caption = ParagraphStyle("KoreanCaption", parent=cell, fontName=bold, fontSize=8, leading=11, spaceBefore=4, spaceAfter=3)
+    heading1 = ParagraphStyle("KoreanH1", parent=cell, fontName=bold, fontSize=13.5, leading=19, spaceBefore=14, spaceAfter=7)
+    heading2 = ParagraphStyle("KoreanH2", parent=cell, fontName=bold, fontSize=11, leading=16, spaceBefore=9, spaceAfter=5)
+    title_style = ParagraphStyle("KoreanTitle", parent=cell, fontName=bold, fontSize=17, leading=24, alignment=TA_CENTER, spaceAfter=4)
+    date_style = ParagraphStyle("KoreanDate", parent=cell, fontSize=8.5, leading=12, alignment=TA_CENTER, textColor=colors.HexColor("#555555"), spaceAfter=10)
+    meta_style = ParagraphStyle("KoreanMeta", parent=cell, fontSize=7, leading=10, textColor=colors.HexColor("#777777"), spaceBefore=8)
+    rule = colors.HexColor("#1f2933")
+    story: list[Any] = [Paragraph(escape(report["title"]), title_style)]
+    if as_of:
+        story.append(Paragraph(escape(f"기준일 {as_of}"), date_style))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=rule, spaceAfter=6))
     width = A4[0] - 90
-    for section in report["sections"]:
+    captions = table_captions(report["sections"])
+    for index, section in enumerate(report["sections"]):
         story.append(Paragraph(escape(section["heading"]), heading1 if section.get("level", 1) == 1 else heading2))
         style = small if section["heading"] in SMALL_SECTIONS else body
         for paragraph in section.get("paragraphs", []):
-            story.append(Paragraph(escape(str(paragraph)).replace("\n", "<br/>"), style))
+            story.append(Paragraph(escape(compact_citations(paragraph)).replace("\n", "<br/>"), style))
         table = section.get("table")
         if table and table.get("rows"):
             weights = _column_weights(table["columns"])
             widths = [width * weight / sum(weights) for weight in weights]
-            data = [[Paragraph(escape(str(column)), cell) for column in table["columns"]]]
-            data.extend([Paragraph(escape(str(value)), cell) for value in row] for row in table["rows"])
+            data = [[Paragraph(escape(str(column)), head_cell) for column in table["columns"]]]
+            data.extend([Paragraph(escape(compact_citations(value)), cell) for value in row] for row in table["rows"])
             grid = Table(data, colWidths=widths, repeatRows=1)
             grid.setStyle(
                 TableStyle(
                     [
-                        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#9aa4b2")),
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8edf3")),
+                        # Horizontal rules only: heavy above and below the table, medium under the header, hairlines between rows.
+                        ("LINEABOVE", (0, 0), (-1, 0), 0.9, rule),
+                        ("LINEBELOW", (0, 0), (-1, 0), 0.5, rule),
+                        ("LINEBELOW", (0, 1), (-1, -2), 0.25, colors.HexColor("#c5ccd4")),
+                        ("LINEBELOW", (0, -1), (-1, -1), 0.9, rule),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f5f7")),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
                         ("LEFTPADDING", (0, 0), (-1, -1), 3),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                        ("TOPPADDING", (0, 0), (-1, -1), 2),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
                     ]
                 )
             )
+            story.append(Paragraph(escape(captions[index]), caption))
             story.append(grid)
             story.append(Spacer(1, 6))
         story.append(Spacer(1, 4))
+    if meta:
+        story.append(HRFlowable(width="100%", thickness=0.4, color=colors.HexColor("#c5ccd4"), spaceBefore=6))
+        story.append(Paragraph(escape(f"생성 정보: {meta}"), meta_style))
     document = SimpleDocTemplate(
-        target if isinstance(target, io.BytesIO) else str(target), pagesize=A4, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=45, title=report["title"]
+        target if isinstance(target, io.BytesIO) else str(target), pagesize=A4, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=48, title=report["title"]
     )
-    document.build(story)
+    document.build(story, onFirstPage=_page_number, onLaterPages=_page_number)
     return font, document.page
 
 
@@ -989,8 +1093,9 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
     check = state.get("evidence_check") or {}
     pdf_font: str | None = None
     pdf_pages: int | None = None
+    as_of = str(config.get("as_of") or "")
     meta = (
-        f"모드 {config['mode']} · 생성 방식 {(report or {}).get('generation_mode', '-')} · 기준일 {config.get('as_of') or '미지정'} · "
+        f"모드 {config['mode']} · 생성 방식 {(report or {}).get('generation_mode', '-')} · "
         f"실행 시각 {str(state.get('started_at', ''))[:19]}"
     )
     if report:
@@ -998,14 +1103,17 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
         md_path.write_text(report["markdown"], encoding="utf-8")
         artifacts["markdown"] = str(md_path)
         environment = Environment(loader=FileSystemLoader(Path(__file__).resolve().parents[1] / "templates"), autoescape=select_autoescape(["html"]))
+        environment.filters["cite"] = compact_citations
         html_path = output_dir / f"{report_name}.html"
         html_path.write_text(
-            environment.get_template("report.html.j2").render(title=report.get("title", report_name), meta=meta, sections=report["sections"]),
+            environment.get_template("report.html.j2").render(
+                title=report.get("title", report_name), meta=meta, as_of=as_of, sections=report["sections"], captions=table_captions(report["sections"])
+            ),
             encoding="utf-8",
         )
         artifacts["html"] = str(html_path)
         pdf_path = output_dir / f"{report_name}.pdf"
-        pdf_font, pdf_pages = _write_pdf(pdf_path, report, meta)
+        pdf_font, pdf_pages = _write_pdf(pdf_path, report, meta, as_of)
         artifacts["pdf"] = str(pdf_path)
     source_path = output_dir / "sources.json"
     source_path.write_text(json.dumps(_redact(state.get("sources", {})), ensure_ascii=False, indent=2), encoding="utf-8")
