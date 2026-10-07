@@ -267,3 +267,91 @@ def test_save_outputs_uses_report_name_and_reports_pdf_font(tmp_path):
     assert f'"pdf_font": "{expected_font}"' in manifest
     assert '"pdf_pages": ' in manifest and '"layout": {' in manifest
     assert "<table>" in (tmp_path / "RAG-Output_test.html").read_text(encoding="utf-8")
+
+
+def quality(action, instructions=(), **items):
+    scores = {"groundedness": 5, "neutrality": 5, "bias": 5, "coverage": 5, **items}
+    return {
+        "passed": False,
+        "threshold": 4,
+        "items": {key: {"score": score, "rule_score": score, "llm_score": None, "reasons": [f"{key} 사유"] if score < 4 else []} for key, score in scores.items()},
+        "action": action,
+        "instructions": list(instructions),
+        "rework_requests": [],
+    }
+
+
+def revisable_state():
+    state = base_state()
+    state["sources"]["s2"] = {"title": "Blog", "url": "https://example.org/blog", "source_type": "web"}
+    state["evidence"]["e2"] = {"technology": "KIVI", "source_id": "s2", "location": "웹", "quote": "second", "claim_type": "reported_fact"}
+    state["evidence_check"] = {"items": [{"perspective": "market", "technology": "KIVI", "field": "adoption", "passed": True}]}
+    state["market_analysis"]["technologies"]["KIVI"]["adoption"] = {"label": "연구 재현 수준", "reason": "공개 코드가 있다. KIVI가 더 우수하다.", "evidence_ids": ["e1"]}
+    state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 양자화한다", "limitations": ["긴 문맥은 검증되지 않았다"], "evidence_ids": ["e2"]}}
+    return state
+
+
+def sections_by_heading(report):
+    return {section["heading"]: section for section in report["sections"]}
+
+
+def test_rewrite_removes_only_the_instructed_sentence_from_the_named_section():
+    state = revisable_state()
+    first = build_report(state)
+    assert "더 우수하다" in first["markdown"] and first["revision"] == {"number": 0}
+    instruction = {"item": "neutrality", "section": "4.1 시장성", "problem": "우열 표현", "quote": "KIVI가 더 우수하다.", "fix": "삭제"}
+    state["report"] = first
+    state["quality_result"] = quality("rewrite_report", [instruction], neutrality=1)
+    second = build_report(state)
+    assert "더 우수하다" not in second["markdown"] and "공개 코드가 있다." in second["markdown"]
+    assert second["revision"] == {"number": 1, "action": "rewrite_report", "applied": [{"item": "neutrality", "section": "4.1 시장성", "quote": "KIVI가 더 우수하다.", "result": "removed"}]}
+    before, after = sections_by_heading(first), sections_by_heading(second)
+    assert all(before[heading] == after[heading] for heading in before if heading != "4.1 시장성")  # other sections are untouched
+    state["report"] = second
+    assert build_report(state)["revision"]["number"] == 2
+
+
+def test_removed_sentence_takes_its_citation_out_of_the_appendix():
+    state = revisable_state()
+    first = build_report(state)
+    assert set(first["citation_map"].values()) == {"e1", "e2"}
+    quote = sections_by_heading(first)["3. 기술 개요"]["paragraphs"][0]  # quoted with citation numbers, as the evaluator sees it
+    state["report"] = first
+    state["quality_result"] = quality("rewrite_report", [{"item": "groundedness", "section": "3. 기술 개요", "problem": "근거 불일치", "quote": quote, "fix": "삭제"}], groundedness=2)
+    second = build_report(state)
+    assert set(second["citation_map"].values()) == {"e1"} and second["used_source_ids"] == ["s1"]
+    assert sections_by_heading(second)["3. 기술 개요"]["paragraphs"][0] != quote
+    assert "second" not in second["markdown"]
+
+
+def test_instruction_records_for_missing_quotes_and_unknown_sections():
+    state = revisable_state()
+    state["report"] = build_report(state)
+    state["quality_result"] = quality(
+        "recollect",
+        [
+            {"item": "neutrality", "section": "없는 절", "quote": "KIVI가 더 우수하다"},  # unknown section: searched everywhere
+            {"item": "groundedness", "section": "5. 시사점", "quote": "보고서에 없는 문장"},
+            {"item": "coverage", "section": "4.2 이해관계자", "quote": ""},
+        ],
+        coverage=2,
+    )
+    report = build_report(state)
+    assert [record["result"] for record in report["revision"]["applied"]] == ["removed", "not_found", "no_quote"]
+    assert report["revision"]["action"] == "recollect" and "더 우수하다" not in report["markdown"]
+
+
+def test_accept_with_limits_lists_failed_quality_items_and_leaves_the_body_alone():
+    state = revisable_state()
+    first = build_report(state)
+    state["report"] = first
+    state["quality_result"] = quality("accept_with_limits", [{"item": "neutrality", "section": "4.1 시장성", "quote": "KIVI가 더 우수하다."}], neutrality=2, bias=3)
+    second = build_report(state)
+    limits = sections_by_heading(second)["6. 한계점"]["paragraphs"]
+    line = next(p for p in limits if p.startswith("품질 평가 미달 항목"))
+    assert "통과 기준(4점)" in line and "중립성 2점(neutrality 사유)" in line and "편향 통제 3점" in line and "Groundedness" not in line
+    assert "더 우수하다" in second["markdown"] and second["revision"] == {"number": 1, "action": "accept_with_limits", "applied": []}
+    before, after = sections_by_heading(first), sections_by_heading(second)
+    assert all(before[heading] == after[heading] for heading in before if heading != "6. 한계점")
+    state["quality_result"] = {**quality("pass"), "passed": True}
+    assert build_report(state)["revision"] == {"number": 0}
