@@ -104,6 +104,18 @@ def collect_conflicts(state: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 class GraphState(TypedDict, total=False):
+    # ── control fields: written by the supervisor only (``quality_result`` by the quality node).
+    # They never receive parallel writes, so they have no reducer.
+    run_id: str  # shared key of the State, the manifest and the LangSmith run metadata
+    next: list[str]  # node names the supervisor chose for the next superstep
+    step_count: int  # number of supervisor decisions so far
+    agent_status: dict[str, dict[str, Any]]  # {"market": {"status": "done", "attempts": 1, "last_error": ""}, ...}
+    rework_requests: list[dict[str, Any]]  # rework instructions of the current turn (overwritten every turn)
+    decision_log: list[dict[str, Any]]  # {"step", "decision", "reason"}; only the most recent entries are kept
+    quality_result: dict[str, Any]  # written by the quality node
+    quality_attempts: int  # incremented by the supervisor each time it loops back after a quality verdict
+
+    # ── payload fields
     run_config: dict[str, Any]
     sources: Annotated[dict[str, dict[str, Any]], merge_by_id]
     evidence: Annotated[dict[str, dict[str, Any]], merge_by_id]
