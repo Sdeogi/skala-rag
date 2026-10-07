@@ -8,7 +8,7 @@
 - D.4 분기와 종료 규칙
 
 이 파일은 `notebooks/20-Schemas.ipynb`에서 셀별로 검증한 뒤 이관한 것.
-스키마 변경 시 노트북과 이 파일을 함께 수정하고 HANDOFF.md에 diff 기록.
+도메인·TRL 판정기가 쓰는 스키마다. 그래프 경계의 계약은 `skala_rag.graph.schemas`에 있다.
 """
 from __future__ import annotations
 

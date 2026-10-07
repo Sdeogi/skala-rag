@@ -413,3 +413,21 @@
 - `uv.lock` 충돌은 손으로 풀지 말고 `uv lock`으로 다시 만든다
 
 **확인**: 별도의 깨끗한 환경에 `uv sync --group dev`로 설치(패키지 약 200개) → `pytest -q` 204 passed, `app.py --mode replay --fixture` 정상
+
+## 2026-10-07 17:14 · sup/live-fixes · deogi
+
+**무엇을**: 이전 과제(RAG)의 인수인계·설계·검토 문서 다섯 개 삭제
+
+**왜**: 고정 병렬 파이프라인 시절의 구조와 지금은 없는 파일(`evidence_check.py`, `supplement.py`)을 설명하고 있어 현재 코드와 맞지 않는다. 같은 문서가 이전 과제 브랜치(`rag`)에 그대로 남아 있어 비교가 필요하면 거기서 볼 수 있다.
+
+**바꾼 파일**:
+- 삭제: `HANDOFF.md`, `docs/GRAPH_OUTPUT_DESIGN.md`, `docs/GRAPH_OUTPUT_HISTORY.md`, `docs/GRAPH_OUTPUT_REVIEW.md`, `docs/PAPER_RAG_HANDOFF.md`
+- `src/skala_rag/tools/retrieve/parsing.py`, `src/skala_rag/schemas/__init__.py`, `src/skala_rag/schemas/state.py` — 삭제한 문서를 가리키던 docstring 문구 수정(코드 변경 없음)
+
+**남의 파일**: 삭제한 문서와 docstring은 이전 과제에서 다른 담당이 쓴 것이다.
+
+**인터페이스 영향**: 없음
+
+**충돌 시 지켜야 할 것**: 이 문서들을 되살리지 않는다. 내용이 필요하면 `rag` 브랜치를 본다.
+
+**확인**: 다섯 파일 모두 `origin/rag`에 있음을 확인한 뒤 삭제. 코드·README·설정에 남은 참조 없음
