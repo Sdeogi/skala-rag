@@ -257,7 +257,7 @@ def test_web_perspective_failure_degrades_to_unknown_labels(papers_dir, tmp_path
 def test_full_graph_with_stubbed_branches_completes(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
     result = build_graph(create_services(settings), output_dir=tmp_path / "out").invoke(initial_state(mode="replay"), config={"recursion_limit": 50})
-    assert result["evidence_check"]["passed"] and result["retry_count"] == 0
+    assert result["evidence_check"]["passed"] and result["agent_status"]["market"]["attempts"] == 0
     assert set(result["artifacts"]) == {"markdown", "html", "pdf", "sources", "manifest"}
     manifest = json.loads((tmp_path / "out" / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "complete" and manifest["metrics"]["totals"]["llm_calls"] >= 40

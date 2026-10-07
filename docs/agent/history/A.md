@@ -45,6 +45,66 @@
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 70 passed
 
+## 2026-10-07 14:40 · sup/graph · San Kim
+
+**무엇을**: 고정 병렬 파이프라인을 Supervisor 허브 그래프로 교체. `supervisor` 노드가 State를 보고 다음 노드를 고르고, 관점 에이전트는 `Send`로 네 키만 받으며, 근거 충분성 평가·재작업·품질 루프를 Supervisor가 결정한다.
+
+**왜**: 과제 필수 항목(하위 에이전트 간 직접 간선 금지, 순서·스텝 수 하드코딩 금지, 근거 평가 후 보고서, 부족 시 재작업, 품질 평가 루프). 기존 그래프는 `technical → 4관점`, `repair → evidence_check`, `report → save`가 직접 간선이었고 품질 루프와 제어 필드가 없었다.
+
+**바꾼 파일**:
+- `src/skala_rag/graph/workflow.py`
+  - 추가: `supervise(state, semantic_review)` — 결정 순서: 치명 오류→`save`; 결정 횟수 상한→보고서가 없으면 `report` 한 번 뒤 `save`(사유 `step_limit`); `technical_findings` 없음→`technical`; `pending` 관점→실행; 돌아온 관점이 있으면 `check_evidence`를 호출해 `evidence_check`에 넣고 통과 못 한 항목을 관점별 `rework_requests`(`attempt` 포함)로 만들어 그 관점만 재실행(상한 `MAX_REWORK_PER_AGENT`), 아니면 `synthesis`→`report`→`quality`; 품질 결과 `pass`→`save`, `rewrite_report`→`quality_attempts+1` 후 `report`, `recollect`→`quality_result["rework_requests"]`로 해당 관점 재실행, 상한이면 `action`을 `accept_with_limits`로 바꿔 `report` 한 번 더 뒤 `save`. 결정마다 `next`, `step_count`, `agent_status`, `rework_requests`, `decision_log`(최근 `DECISION_LOG_LIMIT`개, `reason`은 한국어 문장) 갱신.
+  - 추가: `send_payload(state, name)` — `run_config`, `{name}_analysis`, `rework_requests`(그 관점 것만), `known_evidence_ids`만 넘긴다. `placeholder_quality` — 항상 통과하는 임시 품질 평가기. `new_agent_status`. `ROUTES`, `SEND_PAYLOAD_KEYS`.
+  - `PipelineServices`: `quality_evaluator: Service | None = None` 추가, `retry` 필드 삭제.
+  - `build_graph`: `checkpointer` 인자 추가. 노드 `supervisor`, `quality` 추가. `evidence_check`, `retry`, `repair`, `technical_failed` 노드 삭제(기술 결과 누락 검사는 `technical` 노드 안에서 `technical-0-coverage` 치명 오류로 기록). `prepare`와 `save`를 뺀 모든 노드가 `supervisor`로 돌아온다. `route`는 `state["next"]`만 읽고 관점은 `Send`로 보낸다.
+  - `_call_service`: 오류 키의 회차를 `retry_count` 대신 페이로드 `rework_requests[*].attempt`(`_round`)로 정하고, `round_` 인자로 직접 줄 수 있다. 허용 키 검사·스키마 검증은 그대로. `quality` 노드는 `QualityResult`로 검증하고 실패하면 `quality-{n}-schema` 오류와 통과 대체값(`evaluator: "fallback"`)을 넣는다.
+  - `initial_state`: `run_id`(uuid4, 인자로 지정 가능), 제어 필드 초기값 추가. `retry_count`, `missing_questions` 삭제. `MAX_RETRIES` 상수 삭제.
+- `src/skala_rag/graph/state.py` — `GraphState`에서 `missing_questions`, `retry_count` 삭제.
+- `tests/conftest.py` — `make_services`의 `retry` 인자 삭제.
+- `tests/test_graph.py` — 새 구조로 전면 재작성(27개): 모든 하위 노드의 다음 노드가 `supervisor`뿐인지(컴파일된 간선), `Send` 페이로드가 네 키뿐인지, 부족한 관점만 자기 지시로 재호출, 재작업으로 채워지면 다음 턴에 보고서, 2회 후에도 부족하면 사유 남기고 진행, `rewrite_report` 2회 뒤 `accept_with_limits`, `recollect`는 해당 관점만, 재작업 횟수 없으면 `accept_with_limits`, 잘못된 품질 결과 기록, 최악 경로 19회 ≤ 상한, 항상 미달 서비스에서도 상한 종료, 결정 로그 상한, 예외는 `failed`로 기록 후 계속, `prepare` 치명 오류는 바로 `save`, 하위 에이전트가 제어 필드를 반환하면 버리고 스키마 오류로 기록.
+- `tests/test_cli.py` — `--draw-graph` 검사 간선을 `market --> supervisor;`, `supervisor -.-> quality;`로 변경.
+
+**남의 파일**: `tests/test_integration.py`(B) — `test_full_graph_with_stubbed_branches_completes`의 `result["retry_count"] == 0` 한 줄을 `result["agent_status"]["market"]["attempts"] == 0`으로 바꿈. `retry_count`가 State에서 없어져 KeyError가 나기 때문. 그 밖의 변경 없음.
+
+**인터페이스 영향**:
+- State에서 `retry_count`, `missing_questions` 제거(보고서의 한계점 문장과 manifest의 `retry_count`는 `agent_status`·`evidence_check["items"]`로 옮겨야 한다 — D).
+- 관점 서비스 입력이 State 전체에서 `run_config`, `{name}_analysis`, `rework_requests`, `known_evidence_ids` 네 키로 바뀜. `retry_mode`·`missing_questions`·`evidence`는 더 이상 넘어오지 않는다 — B.
+- `PipelineServices.retry` 삭제, `quality_evaluator` 추가 — C가 합쳐지면 `app.py`에서 조립.
+- `evidence_check`의 형태(`passed`, `items`)는 그대로.
+- 최악 경로 결정 횟수는 19회(재작업 2회 + 재수집 2회가 각각 재작업 1회를 더 부르는 경우)로 `MAX_SUPERVISOR_STEPS=20`을 유지한다.
+
+**충돌 시 지켜야 할 것**:
+- `supervise`의 결정 순서(치명→상한→technical→pending→근거 평가→synthesis/report/quality→품질 결과)를 바꾸지 않는다. 테스트가 결정 로그 순서를 그대로 검사한다.
+- `send_payload`의 네 키 이외를 추가하지 않는다. B의 서비스가 이 키만 받는 것을 전제로 한다.
+- 하위 노드에서 `supervisor` 이외로 가는 간선을 되살리지 않는다(과제 필수 항목).
+- `_call_service`의 허용 키 검사와 `validate_update` 호출을 지우지 않는다. 하위 에이전트가 제어 필드를 덮어쓰는 것을 막는 유일한 장치다.
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 82 passed; `app.py --mode replay --fixture --output-dir outputs/demo` 정상(Supervisor 결정 6회, manifest `complete`)
+
+## 2026-10-07 15:10 · sup/graph · San Kim
+
+**무엇을**: 실행 기반(run_id·체크포인터·LangSmith 메타데이터·fixture 재작업 대응·도식 재생성)과 그에 대한 테스트 추가
+
+**왜**: 중단 후 재개와 트레이스 추적이 안 됐다. run_id 하나로 State, manifest, LangSmith 트레이스를 찾을 수 있어야 하고, fixture 서비스가 새 입력(네 키 페이로드와 `rework_requests`)으로도 재작업 흐름을 흉내 내야 전체 루프를 키 없이 검증할 수 있다.
+
+**바꾼 파일**:
+- `app.py` — `main`: `build_graph(..., checkpointer=InMemorySaver())`; `graph.stream` config에 `run_name`, `tags`(`skala-rag`, 모드, fixture), `metadata.run_id`, `configurable.thread_id=run_id` 추가; 실행 시작 때 `run_id:` 출력. `--checkpoint-db`·`--resume`는 SQLite 체크포인터 의존성이 없어 보류(필요하면 D에게 `langgraph-checkpoint-sqlite` 추가 요청).
+- `src/skala_rag/graph/demo.py` — `_perspective`: 페이로드의 `rework_requests`와 `{name}_analysis`를 읽어 재작업이면 이전 판정을 유지하고 요청 항목만 다시 만든다. metrics에 `rework_items`, `known_evidence` 추가.
+- `docs/graph.mmd` — `app.py --draw-graph`로 재생성(Supervisor 허브).
+- `tests/test_graph.py` — 체크포인터로 `technical` 뒤에서 멈췄다가 같은 `thread_id`로 재개하면 결정이 이어지고 결정마다 체크포인트가 남는지, fixture 서비스가 재작업 항목만 다시 내는지 추가.
+- `tests/test_cli.py` — fixture 실행 출력에 32자 `run_id`가 있는지 추가.
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음. manifest에 넣을 제어 필드(`run_id`, `step_count`, `agent_status`, `decision_log`, `quality_result`, `quality_attempts`)는 State에 모두 있으며 D가 `save_outputs`에서 읽으면 된다.
+
+**충돌 시 지켜야 할 것**:
+- `app.py`의 stream config에서 `configurable.thread_id`를 지우면 체크포인터가 있는 그래프가 실행되지 않는다(LangGraph가 thread_id를 요구한다).
+- `demo.py`의 `_perspective`가 `state["evidence"]`를 읽도록 되돌리면 안 된다. 페이로드에는 `known_evidence_ids`만 있다.
+- `docs/graph.mmd`는 손으로 합치지 말고 `app.py --draw-graph docs/graph.mmd`로 다시 만든다.
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 84 passed; `app.py --mode replay --fixture --output-dir outputs/demo` 정상
+
 ## 2026-10-07 15:40 · sup/graph-contract · San Kim
 
 **무엇을**: `ReworkRequest.attempt`가 0을 받도록 수정(기본값 0, 0 이상)
@@ -62,3 +122,23 @@
 **충돌 시 지켜야 할 것**: `attempt`의 하한을 다시 1로 올리면 C의 재수집 요청이 버려진다.
 
 **확인**: `pytest -q tests/test_schemas.py` 12 passed
+
+## 2026-10-07 17:20 · sup/graph · San Kim
+
+**무엇을**: 통합 브랜치(D의 보고서 변경 4건) 병합, `app.py`에 품질 평가기 조립, LangSmith 추적 확인
+
+**왜**: 품질 평가 노드가 임시 통과 평가기만 쓰고 있었다. C의 `QualityEvaluator`가 통합 브랜치에 들어오면 코드 변경 없이 바로 쓰이도록 조립해 두고, 아직 없으면 임시 평가기로 돌아가게 한다. live면 LLM Judge를 넣고 replay·fixture면 규칙 검사만 하도록 모드에 따라 `judge_model`을 정한다.
+
+**바꾼 파일**:
+- `app.py` — 추가 `_quality_evaluator(mode, model_id)`: `skala_rag.agents.quality.QualityEvaluator`를 import할 수 있으면 live 모드에서만 `ChatOpenAI(model=model_id)`를 judge로 넣어 만들고, 모듈이 없으면(`ImportError`) `None`을 돌려 그래프의 임시 평가기를 쓴다. `main`: `services.quality_evaluator`가 비어 있을 때만 이 값을 넣는다.
+- 병합 커밋: `origin/supervisor`(D의 PR 10·11·15·16) → `sup/graph`. 충돌 없음, 버린 변경 없음.
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음. `--services`로 들어온 factory가 `quality_evaluator`를 직접 넣으면 그대로 쓴다.
+
+**충돌 시 지켜야 할 것**:
+- `_quality_evaluator`의 `ImportError` 분기를 지우면 C 모듈이 없는 환경에서 `app.py`가 시작조차 못 한다.
+- `services.quality_evaluator is None`일 때만 넣는 조건을 지우면 factory가 넣은 평가기를 덮어쓴다.
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 104 passed. C의 `quality.py`를 임시로 두고 fixture 실행 → `complete`, Supervisor 결정 15회(재수집 2회 뒤 `accept_with_limits`), 품질 노드 실행 확인. 추적을 켠 fixture 실행이 LangSmith 프로젝트에 `skala-rag-replay`(tags `skala-rag`, `replay`, `fixture`, metadata `run_id`)로 올라갔고 트레이스에 `supervisor` 6회·관점 4개·`quality` 1회가 보임.

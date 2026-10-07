@@ -125,9 +125,7 @@ class GraphState(TypedDict, total=False):
     stakeholder_analysis: dict[str, Any]
     domain_analysis: dict[str, Any]
     trl_analysis: dict[str, Any]
-    evidence_check: dict[str, Any]
-    missing_questions: list[dict[str, Any]]
-    retry_count: int
+    evidence_check: dict[str, Any]  # {"passed": bool, "items": [...]} written by the supervisor
     synthesis: dict[str, Any]
     report: dict[str, Any]
     artifacts: dict[str, str]
