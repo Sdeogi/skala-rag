@@ -90,11 +90,12 @@ def test_rework_request_shape():
         review_reason="근거가 InfiniGen을 직접 지칭하지 않음",
         question="InfiniGen의 시장성 관점 '상용화와 채택 현황' 판정을 뒷받침하는 원문 근거는 무엇인가?",
     )
-    assert request.reasons == ["unsupported_claim"] and request.attempt == 1
+    assert request.reasons == ["unsupported_claim"] and request.attempt == 0  # 0 until the supervisor assigns the round
+    assert ReworkRequest(perspective="market", technology="KIVI", field="adoption", attempt=2).attempt == 2
     with pytest.raises(ValueError):
         ReworkRequest(perspective="technical", technology="KIVI", field="adoption")
     with pytest.raises(ValueError):
-        ReworkRequest(perspective="market", technology="KIVI", field="adoption", attempt=0)
+        ReworkRequest(perspective="market", technology="KIVI", field="adoption", attempt=-1)
 
 
 def test_decision_requires_step_and_decision():
@@ -134,7 +135,7 @@ def test_quality_result_validates_items_instructions_and_rework_requests():
     }
     result = QualityResult.model_validate(payload)
     assert result.items["bias"].score == 4 and result.items["coverage"].score == 5
-    assert result.instructions[0].item == "neutrality" and result.rework_requests[0].attempt == 1
+    assert result.instructions[0].item == "neutrality" and result.rework_requests[0].attempt == 0
     assert QualityResult(passed=True, action="pass").threshold == 4
     with pytest.raises(ValueError):
         QualityResult(passed=False, action="retry")

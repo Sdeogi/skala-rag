@@ -308,7 +308,7 @@ class ReworkRequest(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     review_reason: str = ""
     question: str = ""
-    attempt: int = Field(default=1, ge=1)  # which rework round of this perspective (1-based)
+    attempt: int = Field(default=0, ge=0)  # rework round of this perspective (1-based); 0 = not assigned yet, the supervisor fills it
 
     @field_validator("reasons", mode="before")
     @classmethod
