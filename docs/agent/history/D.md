@@ -275,3 +275,33 @@
 **충돌 시 지켜야 할 것**: 이 묶기를 보고서 데이터에 적용하지 않는다. 렌더링 단계(`_write_pdf`, HTML 템플릿의 `cite` 필터)에서만 쓴다
 
 **확인**: pytest 137 passed, fixture 실행 정상, 근거 60건 9쪽·근거 90건 10쪽
+
+## 2026-10-07 15:40 · sup/report-manifest · deogi
+
+**무엇을**: 실행 기록(`run_manifest.json`)에 Supervisor 제어 필드와 품질 평가 요약을 기록하고, 보고서가 없어진 State 필드(`retry_count`, `missing_questions`) 대신 `evidence_check["items"]`를 읽게 함
+
+**왜**: Supervisor 그래프가 합쳐진 뒤에도 실행 기록에 `run_id`, 결정 기록, 관점별 상태, 평가 점수가 남지 않아 실행이 끝난 뒤 어떤 판단이 있었는지 확인할 수 없었다. `missing_questions`가 State에서 없어져 6장의 "근거 미확인" 항목과 SUMMARY의 미확인 개수가 항상 비어 있었다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `save_outputs`: manifest에서 `retry_count` 삭제. `run_id`, `step_count`, `agent_status`, `rework_attempts`(관점별 재작업 횟수), `decision_log`, `quality`(요약), `quality_result`(전체) 추가. `generation`에 `report_llm_sections`, `report_revision` 추가
+  - `_quality_summary` 추가: `status`(`passed`/`accepted_with_limits`/`below_threshold`/`not_evaluated`), `action`, `threshold`, 항목별 `scores`, `attempts`
+  - `deterministic_summary`: 미확인 항목 수를 `failed_items(state)`로 셈
+- `src/skala_rag/agents/synthesis.py`
+  - `failed_items(state)` 추가: `evidence_check["items"]` 중 통과하지 못한 항목
+  - `limitation_lines`: `missing_questions` 대신 `failed_items`를 읽고, 항목마다 한 줄이던 것을 기술·관점별 한 줄로 묶음. 사유 코드를 한국어로 표시(`REASON_TITLES`)
+- `tests/test_output.py`, `tests/test_llm_output.py` — `missing_questions`에 기대던 부분을 `evidence_check`로 바꾸고 테스트 2개 추가
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- manifest의 `status` 값과 의미는 그대로다(`complete`/`incomplete`/`failed`, 근거 검사 기준). 품질 평가 결과는 `quality.status`에 따로 둔다
+- manifest에서 `retry_count` 키가 없어졌다. 재작업 횟수는 `rework_attempts`에서 본다
+- 6장의 근거 미확인 문장이 "근거 미확인 항목 — 기술 관점: 항목(사유); …" 형태로 바뀜
+
+**충돌 시 지켜야 할 것**:
+- `limitation_lines`와 `deterministic_summary`가 `missing_questions`를 읽도록 되돌리지 않는다. 그 필드는 State에 없다
+- manifest의 `status`에 품질 평가 결과를 섞지 않는다. 그래프와 CLI 테스트가 근거 검사 기준의 값을 확인한다
+- `evidence_check["items"]`의 원소 형태(`perspective`, `technology`, `field`, `passed`, `reasons`, `review_reason`)에 의존한다
+
+**확인**: pytest 160 passed. `app.py --mode replay --fixture`로 전체 루프 확인: Supervisor 결정 15회(기술 조사 → 4관점 실행 → 종합 → 보고서 → 품질 평가 → 편향 통제 미달로 재수집 2회 → 상한 도달로 한계 명시 후 저장), manifest에 결정 기록·평가 점수·재작업 횟수 기록, 보고서 6장에 품질 평가 미달 항목 기재, PDF 5쪽

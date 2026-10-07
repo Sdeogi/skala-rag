@@ -11,7 +11,6 @@ def sample_state():
         "technical_findings": {"KIVI": {"principle": "KV 2비트 압축"}},
         "market_analysis": {"technologies": {"KIVI": {"adoption": {"label": "상용 서비스 적용 확인", "reason": "서비스 도입", "conditions": "공개 발표", "evidence_ids": ["e1"]}}}},
         "stakeholder_analysis": {"technologies": {"KIVI": {"adopter_view": {"label": "우려", "reason": "운영 부담", "conditions": "대규모 배포", "evidence_ids": ["e1"]}}}},
-        "missing_questions": [],
         "errors": {},
     }
 

@@ -51,7 +51,7 @@ from skala_rag.graph.state import GraphState, aggregate_metrics, collect_conflic
 
 from .korean import josa
 from .report_static import background_paragraphs, selection_paragraphs
-from .synthesis import limitation_lines
+from .synthesis import failed_items, limitation_lines
 
 logger = logging.getLogger(__name__)
 
@@ -480,7 +480,7 @@ def deterministic_summary(state: GraphState) -> list[str]:
                 f"판정했고 두 판정은 서로 다른 조건에서 성립한다{(' ' + cite) if cite else ''}."
             )
         sentences.append(text)
-    missing = len(state.get("missing_questions") or [])
+    missing = len(failed_items(state))
     if missing:
         sentences.append(f"근거를 확인하지 못한 항목 {missing}개는 6장 한계점에 정리했다.")
     sentences.append(TRL_DISCLAIMER + " 이 보고서는 두 기술의 우열이나 도입 추천을 제시하지 않는다.")
@@ -1173,6 +1173,26 @@ def _write_pdf(target: Path | io.BytesIO, report: dict[str, Any], meta: str, as_
     return font, document.page
 
 
+def _quality_summary(state: GraphState) -> dict[str, Any]:
+    """Quality verdict at a glance for the manifest: status, scores per item, loops used."""
+    quality = state.get("quality_result") or {}
+    if not quality:
+        return {"status": "not_evaluated", "attempts": int(state.get("quality_attempts") or 0)}
+    if quality.get("passed"):
+        status = "passed"
+    elif quality.get("action") == "accept_with_limits":
+        status = "accepted_with_limits"
+    else:
+        status = "below_threshold"  # the run ended before the report passed (step limit or an error)
+    return {
+        "status": status,
+        "action": quality.get("action"),
+        "threshold": quality.get("threshold"),
+        "scores": {key: item.get("score") for key, item in (quality.get("items") or {}).items() if isinstance(item, dict)},
+        "attempts": int(state.get("quality_attempts") or 0),
+    }
+
+
 def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str = "report") -> dict[str, str]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1224,8 +1244,15 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
         "started_at": state.get("started_at"),
         "finished_at": finished_at.isoformat(),
         "duration_seconds": round((finished_at - started_at).total_seconds(), 3),
-        "retry_count": state.get("retry_count", 0),
         "status": "failed" if any(item.get("fatal") for item in errors.values()) else ("complete" if check.get("passed") else "incomplete"),
+        # Supervisor control fields: what was decided, why, and how each agent ended (same run_id as the LangSmith trace).
+        "run_id": state.get("run_id"),
+        "step_count": state.get("step_count", 0),
+        "agent_status": state.get("agent_status") or {},
+        "rework_attempts": {name: int((status or {}).get("attempts") or 0) for name, status in (state.get("agent_status") or {}).items()},
+        "decision_log": state.get("decision_log") or [],
+        "quality": _quality_summary(state),
+        "quality_result": state.get("quality_result") or None,
         "evidence_check": check or None,
         "semantic_review": {
             "enabled": check.get("semantic_review_enabled"),
@@ -1239,6 +1266,8 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
             "synthesis_llm_review": synthesis.get("llm_review"),
             "report_mode": (report or {}).get("generation_mode"),
             "report_fallback_reason": (report or {}).get("fallback_reason"),
+            "report_llm_sections": (report or {}).get("llm_sections"),
+            "report_revision": (report or {}).get("revision"),
         },
         "errors": errors,
         "conflicts": collect_conflicts(state),
