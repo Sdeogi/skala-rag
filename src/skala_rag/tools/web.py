@@ -13,6 +13,7 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
+from skala_rag.config import resolve_model_id
 from skala_rag.tools.budget import BudgetExhausted, WebBudget
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -468,7 +469,7 @@ def summarize_source(
     if not isinstance(question, str) or not question.strip():
         raise ValueError("question이 비어 있습니다")
 
-    model_name = os.getenv("WEB_EVIDENCE_MODEL", "gpt-5.4-mini")
+    model_name = resolve_model_id()
     identity = {
         "version": SUMMARY_VERSION,
         "model": model_name,

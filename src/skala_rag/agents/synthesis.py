@@ -142,18 +142,38 @@ def candidate_pairs(state: GraphState) -> tuple[list[dict[str, Any]], list[dict[
     return agreements, conflicts
 
 
+REASON_TITLES = {
+    "missing_item": "판정 없음",
+    "invalid_label": "정의되지 않은 라벨",
+    "not_found_label": "자료를 찾지 못함",
+    "missing_evidence": "근거 없음",
+    "unknown_evidence": "등록되지 않은 근거 인용",
+    "wrong_technology": "다른 기술의 근거 인용",
+    "unknown_source": "출처 미등록",
+    "unverified_evidence": "검증되지 않은 근거",
+    "unsupported_claim": "근거가 판정을 뒷받침하지 않음",
+}
+
+
+def failed_items(state: GraphState) -> list[dict[str, Any]]:
+    """Rubric items that did not pass the supervisor's evidence check (``evidence_check["items"]``)."""
+    return [item for item in (state.get("evidence_check") or {}).get("items") or [] if isinstance(item, dict) and not item.get("passed")]
+
+
 def limitation_lines(state: GraphState) -> list[str]:
-    lines = []
-    for question in state.get("missing_questions", []) or []:
-        reasons = ", ".join(question.get("reasons", [])) if question.get("reasons") else "근거 미확인"
-        line = (
-            f"{question['technology']} {PERSPECTIVE_TITLES.get(question['perspective'], question['perspective'])} 관점 "
-            f"'{FIELD_TITLES.get(question['field'], question['field'])}': 근거 미확인 ({reasons})"
+    """One line per technology and perspective listing the items whose evidence was not confirmed, with the reason."""
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for item in failed_items(state):
+        reasons = ", ".join(REASON_TITLES.get(reason, reason) for reason in item.get("reasons") or []) or "근거 미확인"
+        if item.get("review_reason"):
+            reasons += f" — 검토 LLM: {_clip(item['review_reason'], 120)}"
+        grouped.setdefault((str(item.get("technology")), str(item.get("perspective"))), []).append(
+            f"{FIELD_TITLES.get(item.get('field'), item.get('field'))}({reasons})"
         )
-        if question.get("review_reason"):
-            line += f" — 검토 LLM: {_clip(question['review_reason'], 200)}"
-        lines.append(line)
-    return lines
+    return [
+        f"근거 미확인 항목 — {technology} {PERSPECTIVE_TITLES.get(perspective, perspective)}: " + "; ".join(fields)
+        for (technology, perspective), fields in grouped.items()
+    ]
 
 
 def synthesize(state: GraphState) -> dict[str, Any]:

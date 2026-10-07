@@ -8,7 +8,7 @@
 from skala_rag.tools.retrieve import retrieve_papers   # A(김건우) 담당
 from skala_rag.agents.domain import make_domain_evaluator
 
-domain_node = make_domain_evaluator(retriever=retrieve_papers, model_name="gpt-5.4-mini")
+domain_node = make_domain_evaluator(retriever=retrieve_papers)  # 모델은 RAG_MODEL_ID(없으면 config.DEFAULT_MODEL_ID)
 graph.add_node("domain", domain_node)
 ```
 
@@ -21,6 +21,7 @@ from typing import Callable, Literal
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
+from skala_rag.config import DEFAULT_MODEL_ID
 from skala_rag.prompts.domain import (
     DOMAIN_RUBRIC,
     DomainRubricSpec,
@@ -113,7 +114,7 @@ def judge_one(
 # ---------------------------------------------------------------------------
 def make_domain_evaluator(
     retriever: RetrieveFn,
-    model_name: str = "gpt-5.4-mini",
+    model_name: str = DEFAULT_MODEL_ID,
     k_per_query: int = 5,
 ) -> Callable[[dict], dict]:
     """도메인 평가 노드 함수를 생성한다.

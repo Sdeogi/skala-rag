@@ -6,7 +6,14 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-DEFAULT_MODEL_ID = "gpt-5.4-mini"
+MODEL_ENV_VAR = "RAG_MODEL_ID"  # the one environment variable every LLM caller reads
+DEFAULT_MODEL_ID = "gpt-5.6-luna"  # the one place the default model name is written
+
+
+def resolve_model_id(explicit: str | None = None, env: Mapping[str, str] | None = None) -> str:
+    """Model to call: an explicit argument, else ``RAG_MODEL_ID``, else ``DEFAULT_MODEL_ID``."""
+    source = os.environ if env is None else env
+    return explicit or source.get(MODEL_ENV_VAR) or DEFAULT_MODEL_ID
 
 
 @dataclass(frozen=True)
@@ -23,7 +30,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     return Settings(
         openai_api_key=source.get("OPENAI_API_KEY") or None,
         tavily_api_key=source.get("TAVILY_API_KEY") or None,
-        model_id=source.get("RAG_MODEL_ID") or DEFAULT_MODEL_ID,
+        model_id=resolve_model_id(env=source),
         pdf_font=source.get("RAG_PDF_FONT") or None,
         langsmith_project=source.get("LANGCHAIN_PROJECT") or None,
     )

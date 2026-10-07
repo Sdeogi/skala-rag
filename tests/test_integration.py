@@ -156,8 +156,8 @@ def test_domain_repair_rejudges_only_missing_items(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
     state = initial_state(mode="replay")
     previous = {tech: {field: {"label": "보고 없음", "reason": "old", "conditions": "", "evidence_ids": []} for field in ("memory", "quality", "latency", "throughput", "integration")} for tech in TECHS}
-    state.update(retry_mode=True, retry_count=1, domain_analysis={"perspective": "domain", "technologies": previous, "status": "insufficient_evidence"})
-    state["missing_questions"] = [{"perspective": "domain", "technology": "KIVI", "field": "quality", "question": "?", "reasons": ["missing_evidence"]}]
+    state.update(domain_analysis={"perspective": "domain", "technologies": previous, "status": "insufficient_evidence"})
+    state["rework_requests"] = [{"perspective": "domain", "technology": "KIVI", "field": "quality", "attempt": 1, "question": "?", "reasons": ["missing_evidence"]}]
     update = create_services(settings).domain(state)
     technologies = update["domain_analysis"]["technologies"]
     assert technologies["KIVI"]["quality"]["label"] == "조건부 보고" and technologies["KIVI"]["memory"]["label"] == "보고 없음"
@@ -186,9 +186,9 @@ def test_web_perspective_rework_recollects_only_requested_fields(papers_dir, tmp
     services = create_services(settings)
     state = initial_state(mode="live")
     first = services.stakeholder(state)
-    state.update(retry_mode=True, retry_count=1, stakeholder_analysis=first["stakeholder_analysis"])
-    state["missing_questions"] = [
-        {"perspective": "stakeholder", "technology": "InfiniGen", "field": "adopter_view", "question": "?", "reasons": ["missing_evidence"]}
+    state.update(stakeholder_analysis=first["stakeholder_analysis"])
+    state["rework_requests"] = [
+        {"perspective": "stakeholder", "technology": "InfiniGen", "field": "adopter_view", "attempt": 1, "question": "?", "reasons": ["missing_evidence"]}
     ]
     second = services.stakeholder(state)
     # The requested (tech, field) triggers one more collection call; untouched techs stay idle.
@@ -221,9 +221,9 @@ def test_web_perspective_rework_retries_failed_technology(papers_dir, tmp_path):
     state = initial_state(mode="live")
     first = services.stakeholder(state)
     assert first["stakeholder_analysis"]["technologies"]["InfiniGen"]["adopter_view"]["label"] == "미확인"
-    state.update(retry_mode=True, retry_count=1, stakeholder_analysis=first["stakeholder_analysis"])
-    state["missing_questions"] = [
-        {"perspective": "stakeholder", "technology": tech, "field": "adopter_view", "question": "?", "reasons": ["missing_evidence"]} for tech in TECHS
+    state.update(stakeholder_analysis=first["stakeholder_analysis"])
+    state["rework_requests"] = [
+        {"perspective": "stakeholder", "technology": tech, "field": "adopter_view", "attempt": 1, "question": "?", "reasons": ["missing_evidence"]} for tech in TECHS
     ]
     second = services.stakeholder(state)
     assert second["stakeholder_analysis"]["technologies"]["InfiniGen"]["adopter_view"]["label"] == "우려"
@@ -249,9 +249,9 @@ def test_trl_rework_keeps_live_mode_and_skips_met_stages(papers_dir, tmp_path):
     assert set(seen_modes) == {"live"}
     seen_modes.clear()
     seen_queries.clear()
-    state.update(retry_mode=True, retry_count=1, trl_analysis=first["trl_analysis"])
-    state["missing_questions"] = [
-        {"perspective": "trl", "technology": "KIVI", "field": "trl", "question": "?", "reasons": ["unsupported_claim"]}
+    state.update(trl_analysis=first["trl_analysis"])
+    state["rework_requests"] = [
+        {"perspective": "trl", "technology": "KIVI", "field": "trl", "attempt": 1, "question": "?", "reasons": ["unsupported_claim"]}
     ]
     services.trl(state)
     # Rework must honour the run's mode (no more forced replay) and only KIVI is targeted.
@@ -325,13 +325,13 @@ def test_rework_passes_fresh_queries_to_agent(papers_dir, tmp_path):
     first = services.market(state)
     assert all("queries_by_topic" not in call for call in seen_kwargs), "first run uses the agent defaults"
 
-    state.update(retry_mode=True, retry_count=1, market_analysis=first["market_analysis"])
-    state["missing_questions"] = [
+    state.update(market_analysis=first["market_analysis"])
+    state["rework_requests"] = [
         {
             "perspective": "market",
             "technology": "KIVI",
             "field": "adoption",
-            "question": "KIVI 상용 서비스 적용 사례",
+            "attempt": 1, "question": "KIVI 상용 서비스 적용 사례",
             "reasons": ["unsupported_claim"],
             "review_reason": "근거가 재현 수준에 머물고 상용 적용을 직접 다루지 않음",
         }

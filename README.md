@@ -28,8 +28,8 @@ KV Cache의 최적화 기술을 소프트웨어와 하드웨어 진영에서 각
 ## Tech Stack
 
 - Framework : LangGraph 1.x
-- LLM/Generator : gpt-5.4-mini (`RAG_MODEL_ID`로 변경)
-- LLM/Judge : gpt-5.4-mini (생성과 다른 프롬프트, 별도 호출)
+- LLM/Generator : gpt-5.6-luna (`RAG_MODEL_ID`로 변경, 모든 LLM 호출에 적용)
+- LLM/Judge : gpt-5.6-luna (생성과 다른 프롬프트, 별도 호출)
 - Retrieval : FAISS - Hit Rate@5 65%, MRR@5 0.403 (라벨링 질의 20개, `evaluation/retrieval/report.md`)
 - Embedding : intfloat/multilingual-e5-small (sentence-transformers)
 

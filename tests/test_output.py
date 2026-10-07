@@ -15,7 +15,6 @@ def base_state():
         "evidence": {"e1": {"technology": "KIVI", "source_id": "s1", "location": "p.3", "quote": "evidence", "claim_type": "reported_fact"}},
         "market_analysis": {"technologies": {"KIVI": {"adoption": {"label": "연구 재현 수준", "reason": "공개 코드", "evidence_ids": ["e1", "bad"]}}}},
         "synthesis": {"agreements": [], "conflicts": [], "limitations": []},
-        "missing_questions": [{"technology": "KIVI", "perspective": "market", "field": "adoption", "question": "채택 근거?", "reasons": ["unknown_evidence"]}],
         "errors": {},
     }
 
@@ -121,7 +120,10 @@ def test_limitations_group_repeated_errors_and_summary_falls_back_to_any_passed_
     state["errors"]["trl-0"] = {"node": "trl", "reason": "other", "fatal": False, "kind": "service"}
     state["errors"]["stakeholder-a"] = {"node": "stakeholder", "reason": "FileNotFoundError: 캐시가 없습니다: search_aaa.json", "fatal": False, "kind": "service"}
     state["errors"]["stakeholder-b"] = {"node": "stakeholder", "reason": "FileNotFoundError: 캐시가 없습니다: search_bbb.json", "fatal": False, "kind": "service"}
-    state["missing_questions"][0]["review_reason"] = "근거가 채택 사실을 말하지 않음"
+    state["evidence_check"] = {"items": [
+        {"perspective": "market", "technology": "KIVI", "field": "adoption", "passed": False, "reasons": ["unsupported_claim"], "review_reason": "근거가 채택 사실을 말하지 않음"},
+        {"perspective": "domain", "technology": "KIVI", "field": "latency", "passed": True, "reasons": []},
+    ]}
     state["domain_analysis"] = {"technologies": {"KIVI": {"memory": {"label": "미확인", "reason": "없음", "evidence_ids": []}, "latency": {"label": "조건부 보고", "reason": "지연 보고", "evidence_ids": ["e1"]}}}}
     report = build_report(state)
     limits = next(section for section in report["sections"] if section["heading"] == "6. 한계점")["paragraphs"]
@@ -416,3 +418,53 @@ def test_long_citation_runs_stay_one_bracket_each_in_the_data_and_merge_only_whe
     assert [compact_citations(text) for text in numbered[0]["paragraphs"]] == ["KIVI는 보고됐다 [1]–[7].", "짧은 인용이다 [1], [2]."]
     # 번호 매긴 문장과 번호 매기기 전 문장이 같은 글로 비교된다(수정 지시의 quote 대조)
     assert plain_text("KIVI는 보고됐다 [1] [2] [3].") == plain_text("KIVI는 보고됐다 [e1] [e2] [e3].") == "KIVI는 보고됐다."
+
+
+def test_unconfirmed_items_are_grouped_per_technology_and_perspective_from_the_evidence_check():
+    state = base_state()
+    state["missing_questions"] = [{"technology": "KIVI", "perspective": "trl", "field": "trl", "reasons": ["missing_item"]}]  # removed State field: ignored
+    state["evidence_check"] = {"items": [
+        {"perspective": "market", "technology": "KIVI", "field": "market_size", "passed": False, "reasons": ["not_found_label"]},
+        {"perspective": "market", "technology": "KIVI", "field": "adoption", "passed": False, "reasons": ["unsupported_claim"], "review_reason": "업계 일반 평가일 뿐이다"},
+        {"perspective": "market", "technology": "KIVI", "field": "ecosystem", "passed": True, "reasons": []},
+        {"perspective": "stakeholder", "technology": "InfiniGen", "field": "adopter_view", "passed": False, "reasons": ["missing_evidence", "custom_code"]},
+    ]}
+    report = build_report(state)
+    limits = sections_by_heading(report)["6. 한계점"]["paragraphs"]
+    unconfirmed = [p for p in limits if p.startswith("근거 미확인 항목")]
+    assert unconfirmed == [
+        "근거 미확인 항목 — KIVI 시장성: 시장 규모와 성장(자료를 찾지 못함); 상용화와 채택 현황(근거가 판정을 뒷받침하지 않음 — 검토 LLM: 업계 일반 평가일 뿐이다)",
+        "근거 미확인 항목 — InfiniGen 이해관계자: 도입 기업과 개발자(근거 없음, custom_code)",
+    ]
+    assert "근거를 확인하지 못한 항목 3개는 6장 한계점에 정리했다." in sections_by_heading(report)["SUMMARY"]["paragraphs"][0]
+    assert not any("기술 성숙도(TRL)" in p and "근거 미확인 항목" in p for p in limits)
+
+
+def test_manifest_records_supervisor_decisions_agent_status_and_quality(tmp_path):
+    import json
+
+    state = initial_state(mode="replay")
+    state.update(revisable_state())
+    state["run_config"] = initial_state(mode="replay")["run_config"]
+    state.update(
+        run_id="run-123",
+        step_count=7,
+        agent_status={"market": {"status": "done", "attempts": 1}, "trl": {"status": "insufficient", "attempts": 2, "last_error": ""}},
+        decision_log=[{"step": 1, "decision": "technical", "reason": "기술 조사 결과 없음"}, {"step": 4, "decision": "rework:market", "reason": "시장성 1개 항목 근거 부족"}],
+        quality_attempts=2,
+    )
+    state["report"] = build_report(state)
+    save_outputs(state, tmp_path / "none")
+    assert json.loads((tmp_path / "none" / "run_manifest.json").read_text(encoding="utf-8"))["quality"] == {"status": "not_evaluated", "attempts": 2}
+    state["quality_result"] = quality("accept_with_limits", neutrality=2)
+    state["report"] = build_report(state)
+    save_outputs(state, tmp_path / "limits")
+    manifest = json.loads((tmp_path / "limits" / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["run_id"] == "run-123" and manifest["step_count"] == 7 and "retry_count" not in manifest
+    assert manifest["rework_attempts"] == {"market": 1, "trl": 2} and manifest["agent_status"]["trl"]["status"] == "insufficient"
+    assert [entry["decision"] for entry in manifest["decision_log"]] == ["technical", "rework:market"]
+    assert manifest["quality"] == {"status": "accepted_with_limits", "action": "accept_with_limits", "threshold": 4, "scores": {"groundedness": 5, "neutrality": 2, "bias": 5, "coverage": 5}, "attempts": 2}
+    assert manifest["quality_result"]["items"]["neutrality"]["score"] == 2 and manifest["generation"]["report_revision"]["action"] == "accept_with_limits"
+    state["quality_result"] = {**quality("pass"), "passed": True}
+    save_outputs(state, tmp_path / "passed")
+    assert json.loads((tmp_path / "passed" / "run_manifest.json").read_text(encoding="utf-8"))["quality"]["status"] == "passed"

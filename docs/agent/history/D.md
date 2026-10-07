@@ -275,3 +275,67 @@
 **충돌 시 지켜야 할 것**: 이 묶기를 보고서 데이터에 적용하지 않는다. 렌더링 단계(`_write_pdf`, HTML 템플릿의 `cite` 필터)에서만 쓴다
 
 **확인**: pytest 137 passed, fixture 실행 정상, 근거 60건 9쪽·근거 90건 10쪽
+
+## 2026-10-07 15:40 · sup/report-manifest · deogi
+
+**무엇을**: 실행 기록(`run_manifest.json`)에 Supervisor 제어 필드와 품질 평가 요약을 기록하고, 보고서가 없어진 State 필드(`retry_count`, `missing_questions`) 대신 `evidence_check["items"]`를 읽게 함
+
+**왜**: Supervisor 그래프가 합쳐진 뒤에도 실행 기록에 `run_id`, 결정 기록, 관점별 상태, 평가 점수가 남지 않아 실행이 끝난 뒤 어떤 판단이 있었는지 확인할 수 없었다. `missing_questions`가 State에서 없어져 6장의 "근거 미확인" 항목과 SUMMARY의 미확인 개수가 항상 비어 있었다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `save_outputs`: manifest에서 `retry_count` 삭제. `run_id`, `step_count`, `agent_status`, `rework_attempts`(관점별 재작업 횟수), `decision_log`, `quality`(요약), `quality_result`(전체) 추가. `generation`에 `report_llm_sections`, `report_revision` 추가
+  - `_quality_summary` 추가: `status`(`passed`/`accepted_with_limits`/`below_threshold`/`not_evaluated`), `action`, `threshold`, 항목별 `scores`, `attempts`
+  - `deterministic_summary`: 미확인 항목 수를 `failed_items(state)`로 셈
+- `src/skala_rag/agents/synthesis.py`
+  - `failed_items(state)` 추가: `evidence_check["items"]` 중 통과하지 못한 항목
+  - `limitation_lines`: `missing_questions` 대신 `failed_items`를 읽고, 항목마다 한 줄이던 것을 기술·관점별 한 줄로 묶음. 사유 코드를 한국어로 표시(`REASON_TITLES`)
+- `tests/test_output.py`, `tests/test_llm_output.py` — `missing_questions`에 기대던 부분을 `evidence_check`로 바꾸고 테스트 2개 추가
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- manifest의 `status` 값과 의미는 그대로다(`complete`/`incomplete`/`failed`, 근거 검사 기준). 품질 평가 결과는 `quality.status`에 따로 둔다
+- manifest에서 `retry_count` 키가 없어졌다. 재작업 횟수는 `rework_attempts`에서 본다
+- 6장의 근거 미확인 문장이 "근거 미확인 항목 — 기술 관점: 항목(사유); …" 형태로 바뀜
+
+**충돌 시 지켜야 할 것**:
+- `limitation_lines`와 `deterministic_summary`가 `missing_questions`를 읽도록 되돌리지 않는다. 그 필드는 State에 없다
+- manifest의 `status`에 품질 평가 결과를 섞지 않는다. 그래프와 CLI 테스트가 근거 검사 기준의 값을 확인한다
+- `evidence_check["items"]`의 원소 형태(`perspective`, `technology`, `field`, `passed`, `reasons`, `review_reason`)에 의존한다
+
+**확인**: pytest 160 passed. `app.py --mode replay --fixture`로 전체 루프 확인: Supervisor 결정 15회(기술 조사 → 4관점 실행 → 종합 → 보고서 → 품질 평가 → 편향 통제 미달로 재수집 2회 → 상한 도달로 한계 명시 후 저장), manifest에 결정 기록·평가 점수·재작업 횟수 기록, 보고서 6장에 품질 평가 미달 항목 기재, PDF 5쪽
+
+## 2026-10-07 15:55 · sup/report-manifest · deogi
+
+**무엇을**: (1) 모델 이름과 환경 변수를 한 곳으로 통일, (2) 재작업 테스트 4개가 병합 뒤 실패하던 것을 수정하고 예전 형식 호환 코드를 제거. 모든 PR이 `supervisor`에 합쳐진 뒤의 최종 정리 작업이라 여러 트랙의 파일을 함께 고쳤다.
+
+**왜**:
+- 모델 이름이 파일마다 따로 적혀 있었고(`gpt-5.4-mini` 9곳, `gpt-4o-mini` 1곳) 환경 변수도 셋(`RAG_MODEL_ID`, `WEB_EVIDENCE_MODEL`, `TECHNICAL_AGENT_MODEL`)이었다. `gpt-5.4-mini`가 더는 호출되지 않아 `RAG_MODEL_ID`만 바꾸면 웹 근거 요약이 계속 실패했다
+- 서비스의 재작업 입력 읽기가 "`rework_requests` 필드가 있으면 그것만 본다"였는데, 그래프의 초기 State가 이 필드를 빈 목록으로 넣어 두면서 예전 형식(`retry_mode`, `missing_questions`, `retry_count`)으로 입력을 주는 테스트 4개가 "지시 없음"으로 처리돼 실패했다. 실제 그래프는 새 형식만 보내므로 실행에는 영향이 없었다
+
+**바꾼 파일** (모델 통일):
+- `src/skala_rag/config.py` — `DEFAULT_MODEL_ID = "gpt-5.6-luna"`, `MODEL_ENV_VAR`, `resolve_model_id(explicit, env)` 추가(명시 인자 → `RAG_MODEL_ID` → 기본값 순)
+- `src/skala_rag/graph/workflow.py`, `graph/schemas.py`, `schemas/state.py`, `agents/domain.py`, `agents/trl.py` — 모델 이름 문자열 대신 `DEFAULT_MODEL_ID` 사용
+- `src/skala_rag/integration/services.py` — `_model_id`가 `resolve_model_id` 사용
+- `src/skala_rag/tools/web.py` — `WEB_EVIDENCE_MODEL` 삭제, `resolve_model_id()` 사용
+- `src/skala_rag/agents/technical/agent.py` — `MODEL_ENV_VAR`(`TECHNICAL_AGENT_MODEL`), `DEFAULT_MODEL` 삭제, `resolve_model_id(model)` 사용
+- `app.py` — `--model-id` 도움말이 기본값을 `DEFAULT_MODEL_ID`에서 가져옴
+- `.env.template`, `README.md` — `gpt-5.6-luna`로 갱신
+
+**바꾼 파일** (재작업 테스트):
+- `src/skala_rag/integration/services.py` — `_rework_requests`와 `_round_key`에서 예전 형식 분기 삭제. `rework_requests`만 읽는다
+- `tests/test_integration.py` — 재작업 테스트 5곳의 입력을 `retry_mode`/`retry_count`/`missing_questions`에서 `rework_requests`(`attempt` 포함)로 변경. 확인하는 동작은 그대로
+
+**남의 파일**: 위 목록 중 `config.py`·`graph/*`·`app.py`(그래프 담당), `integration/services.py`·`tools/web.py`·`agents/domain.py`·`trl.py`·`technical/agent.py`·`schemas/state.py`·`tests/test_integration.py`(하위 에이전트 담당). 팀 작업이 모두 합쳐진 뒤 최종본을 정리하는 단계에서 일괄 수정했다.
+
+**인터페이스 영향**:
+- 환경 변수는 `RAG_MODEL_ID` 하나만 읽는다. `WEB_EVIDENCE_MODEL`, `TECHNICAL_AGENT_MODEL`은 더 이상 읽지 않으므로 `.env`에 있어도 효과가 없다
+- 웹 근거 요약의 캐시 키에 모델 이름이 들어가므로, 모델을 바꾸면 이전 모델로 만든 요약 캐시는 재사용되지 않는다
+- 서비스는 예전 형식의 재작업 입력을 더 이상 받지 않는다
+
+**충돌 시 지켜야 할 것**:
+- 모델 이름 문자열을 다른 파일에 다시 적지 않는다. `config.DEFAULT_MODEL_ID`나 `resolve_model_id`를 쓴다
+- `_rework_requests`에 예전 형식 분기를 되살리지 않는다. 그래프는 `rework_requests`만 보낸다
+
+**확인**: pytest 171 passed(이전 4 failed), `app.py --mode replay --fixture` 정상

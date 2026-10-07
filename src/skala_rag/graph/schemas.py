@@ -14,6 +14,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from skala_rag.config import DEFAULT_MODEL_ID
+
 Mode = Literal["live", "replay"]
 ClaimType = Literal["reported_fact", "inference", "unverified"]
 Perspective = Literal["market", "stakeholder", "domain", "trl"]
@@ -119,7 +121,7 @@ class RunConfig(BaseModel):
     mode: Mode
     technologies: list[str]
     domain: str
-    model_id: str = "gpt-5.4-mini"
+    model_id: str = DEFAULT_MODEL_ID
     as_of: str | None = None
     paper_dir: str | None = None
     max_paper_pages: int = 200
