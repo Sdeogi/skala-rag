@@ -80,19 +80,16 @@ def add_paragraph(state: dict, prefix: str, text: str) -> None:
     section(state, prefix)["paragraphs"].append(text)
 
 
-def numbered(state: dict) -> dict:
-    """``[근거 ID]`` 인용을 ``[n]``으로 바꾸고 ``citation_map``을 붙인 State 사본."""
+def as_evidence_ids(state: dict) -> dict:
+    """번호 인용(``[n]``)을 ``[근거 ID]``로 되돌리고 ``citation_map``을 뗀 State 사본(옛 형식 보고서)."""
     copy = deepcopy(state)
-    mapping: dict[str, str] = {}
+    mapping = copy["report"].pop("citation_map")
 
     def convert(text: str) -> str:
         def replace(match: re.Match[str]) -> str:
-            token = match.group(1)
-            if token in copy["evidence"]:
-                return f"[{mapping.setdefault(token, str(len(mapping) + 1))}]"
-            return match.group(0)
+            return " ".join(f"[{mapping[number]}]" for number in re.findall(r"\d+", match.group(1)))
 
-        return re.sub(r"\[([^\[\]]+)\]", replace, text)
+        return re.sub(r"\[(\d+(?:\s*,\s*\d+)*)\]", replace, text)
 
     for item in copy["report"]["sections"]:
         if item["heading"].startswith(("REFERENCE", "부록")):
@@ -100,7 +97,6 @@ def numbered(state: dict) -> dict:
         item["paragraphs"] = [convert(text) for text in item["paragraphs"]]
         if item.get("table"):
             item["table"]["rows"] = [[convert(cell) for cell in row] for row in item["table"]["rows"]]
-    copy["report"]["citation_map"] = {number: evidence_id for evidence_id, number in mapping.items()}
     return copy
 
 
@@ -198,17 +194,15 @@ def test_citation_to_missing_evidence_is_groundedness_one():
 
 def test_both_citation_formats_give_the_same_result():
     state = make_state()
-    by_id, _, _ = evaluate(state)
-    by_number, _, _ = evaluate(numbered(state))
-    assert by_id == by_number
-    broken = deepcopy(state)
-    add_paragraph(broken, "5.", "KIVI는 잘 동작한다 [ghost].")
-    add_paragraph_numbered = numbered(broken)
-    assert evaluate(broken)[0]["items"]["groundedness"]["score"] == 1
-    assert evaluate(add_paragraph_numbered)[0]["items"]["groundedness"]["score"] == 1
-    out_of_range = numbered(state)
-    add_paragraph(out_of_range, "5.", "KIVI는 잘 동작한다 [99].")
-    assert evaluate(out_of_range)[0]["items"]["groundedness"]["score"] == 1
+    assert state["report"]["citation_map"]  # 보고서가 번호 인용을 쓴다
+    old_format = as_evidence_ids(state)
+    assert "citation_map" not in old_format["report"] and "[KIVI-w1]" in old_format["report"]["markdown"] + str(old_format["report"]["sections"])
+    assert evaluate(state)[0] == evaluate(old_format)[0]
+    for broken in (state, old_format):  # 존재하지 않는 인용은 두 형식 모두 Groundedness 1점
+        for token in ("[ghost]", "[99]"):
+            copy = deepcopy(broken)
+            add_paragraph(copy, "5.", f"KIVI는 잘 동작한다 {token}.")
+            assert evaluate(copy)[0]["items"]["groundedness"]["score"] == 1
 
 
 def test_sentences_without_citation_lower_the_ratio():
