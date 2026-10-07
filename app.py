@@ -26,7 +26,7 @@ if os.environ.get("RAG_DISABLE_DOTENV") != "1":  # tests set this so a local .en
     load_dotenv()
 
 from skala_rag.agents.report import save_outputs  # noqa: E402
-from skala_rag.config import load_settings, missing_settings  # noqa: E402
+from skala_rag.config import DEFAULT_MODEL_ID, load_settings, missing_settings  # noqa: E402
 from skala_rag.graph.workflow import PipelineServices, build_graph, draw_mermaid, initial_state  # noqa: E402
 
 
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--report-name", default="report", help="보고서 파일 이름(확장자 제외). 예: RAG-Output_판교_10반_이름")
     parser.add_argument("--paper-dir", type=Path, help="논문 PDF 폴더 (A 브랜치 prepare가 사용)")
-    parser.add_argument("--model-id", default=None, help="기본값: RAG_MODEL_ID 또는 gpt-5.4-mini")
+    parser.add_argument("--model-id", default=None, help=f"기본값: RAG_MODEL_ID 또는 {DEFAULT_MODEL_ID}")
     parser.add_argument("--technologies", nargs=2, metavar=("SW_TECH", "HW_TECH"), default=("KIVI", "InfiniGen"))
     parser.add_argument("--domain", default="클라우드 LLM 서빙")
     parser.add_argument("--as-of", default=None, help="평가 기준일 YYYY-MM-DD (기본: 오늘)")

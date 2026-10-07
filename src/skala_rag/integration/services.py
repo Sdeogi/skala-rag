@@ -15,9 +15,7 @@ modules untouched:
 Rework rounds (``state["rework_requests"]`` non-empty for a perspective) re-run only
 the technologies/items named in those requests and merge into the previous result.
 Each request carries ``perspective``, ``technology``, ``field``, ``reasons``,
-``review_reason``, ``question`` and an ``attempt`` counter. A legacy
-``retry_mode`` + ``missing_questions`` + ``retry_count`` shape is accepted during
-the Supervisor transition and converted internally.
+``review_reason``, ``question`` and an ``attempt`` counter.
 
 Usage: ``python app.py --mode live`` (default factory) or
 ``--services skala_rag.integration.services:create_services``.
@@ -35,6 +33,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from skala_rag.config import resolve_model_id
 from skala_rag.graph.schemas import LABELS, UNKNOWN_LABELS
 from skala_rag.graph.workflow import PipelineServices
 from skala_rag.integration.rework import build_rework_queries, needs_research
@@ -280,25 +279,17 @@ def _technologies(state: Mapping[str, Any]) -> list[str]:
 
 
 def _model_id(state: Mapping[str, Any], settings: IntegrationSettings) -> str:
-    return settings.model_id or str(_config(state).get("model_id") or "gpt-5.4-mini")
+    return resolve_model_id(settings.model_id or _config(state).get("model_id"))
 
 
 def _rework_requests(state: Mapping[str, Any], perspective: str) -> list[dict[str, Any]]:
     """Normalized rework instructions for one perspective.
 
     Reads ``state["rework_requests"]`` (list of dicts with ``perspective``, ``technology``,
-    ``field``, ``reasons``, ``review_reason``, ``question``, ``attempt``). While the
-    Supervisor still emits the legacy keys (``retry_mode`` + ``missing_questions`` +
-    ``retry_count``), those are mapped to the new shape so services keep working during
-    the transition. Remove the legacy branch once the Supervisor rewrite lands.
+    ``field``, ``reasons``, ``review_reason``, ``question``, ``attempt``), which the
+    Supervisor fills for the perspectives it sends back to work.
     """
-    requests = state.get("rework_requests")
-    if requests is not None:
-        return [dict(r) for r in requests if r and r.get("perspective") == perspective]
-    if not state.get("retry_mode"):
-        return []
-    attempt = int(state.get("retry_count", 1) or 1)
-    return [{**q, "attempt": attempt} for q in (state.get("missing_questions") or []) if q.get("perspective") == perspective]
+    return [dict(r) for r in (state.get("rework_requests") or []) if r and r.get("perspective") == perspective]
 
 
 def _is_rework(state: Mapping[str, Any], perspective: str) -> bool:
@@ -365,14 +356,9 @@ def _tech_enum(tech: str) -> Any:
 def _round_key(state: Mapping[str, Any], key: str, perspective: str | None = None, tech: str | None = None) -> str:
     """Suffix an error/record key with the rework attempt so repeat rounds don't overwrite earlier records.
 
-    ``perspective`` is required to look up the attempt from ``rework_requests``. The legacy
-    ``retry_count`` fallback keeps working while workflow still sets it.
+    ``perspective`` is required to look up the attempt from ``rework_requests``.
     """
-    if perspective is None:
-        if state.get("retry_mode"):
-            return f"{key}-r{int(state.get('retry_count', 0) or 0)}"
-        return key
-    if not _is_rework(state, perspective):
+    if perspective is None or not _is_rework(state, perspective):
         return key
     attempt = _rework_attempt(state, perspective, tech)
     return f"{key}-r{attempt}" if attempt else key

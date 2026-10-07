@@ -30,6 +30,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
+from skala_rag.config import DEFAULT_MODEL_ID
 from skala_rag.agents.report import build_report, save_outputs
 from skala_rag.agents.synthesis import synthesize
 
@@ -92,7 +93,7 @@ def initial_state(
     mode: str,
     technologies: tuple[str, str] | list[str] = ("KIVI", "InfiniGen"),
     domain: str = "클라우드 LLM 서빙",
-    model_id: str = "gpt-5.4-mini",
+    model_id: str = DEFAULT_MODEL_ID,
     paper_dir: str | None = None,
     as_of: str | None = None,
     budget: Mapping[str, Any] | None = None,

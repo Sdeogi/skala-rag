@@ -12,8 +12,7 @@ from skala_rag.agents.trl import make_trl_evaluator
 trl_node = make_trl_evaluator(
     retriever=retrieve_papers,
     web_search=search_web,
-    model_name="gpt-5.4-mini",
-)
+)  # 모델은 RAG_MODEL_ID(없으면 config.DEFAULT_MODEL_ID)
 graph.add_node("trl", trl_node)
 ```
 """
@@ -24,6 +23,7 @@ from typing import Callable, Literal
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
+from skala_rag.config import DEFAULT_MODEL_ID
 from skala_rag.prompts.trl import (
     TRL_STAGES,
     TRL_STAGE_USER_TEMPLATE,
@@ -169,7 +169,7 @@ def judge_trl_for_tech(
 def make_trl_evaluator(
     retriever: RetrieveFn,
     web_search: WebSearchFn,
-    model_name: str = "gpt-5.4-mini",
+    model_name: str = DEFAULT_MODEL_ID,
     k_rag: int = 5,
     k_web: int = 5,
 ) -> Callable[[dict], dict]:

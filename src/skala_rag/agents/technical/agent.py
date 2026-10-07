@@ -9,19 +9,17 @@ LLM이 존재하지 않는 evidence_id를 인용하면(설계서 D.4 가드레�
 
 from __future__ import annotations
 
-import os
 from difflib import SequenceMatcher
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from skala_rag.config import resolve_model_id
 from skala_rag.tools.retrieve import retrieve_papers
 
 from .prompts import COMMON_QUESTIONS, CommonQuestion, EXTRACTION_SYSTEM_PROMPT, build_user_prompt
 from .schemas import CategoryFindings, ClaimType, Evidence, TechFindings, TechnicalResearchResult
 
-MODEL_ENV_VAR = "TECHNICAL_AGENT_MODEL"
-DEFAULT_MODEL = "gpt-4o-mini"  # 설계서는 gpt-5.4-mini를 지정하나 실존 모델명이 불확실해 env로 override 가능하게 함
 # 어떤 질문에도 답이 될 수 없는 메타데이터 섹션(설계서 B.7: 관련 없는 내용은 근거로 쓰지 않음).
 _EXCLUDED_SECTIONS = {"acknowledgments", "acknowledgements"}
 _DUPLICATE_CLAIM_SIMILARITY_THRESHOLD = 0.8
@@ -39,7 +37,7 @@ class _ExtractionResponse(BaseModel):
 
 
 def _resolve_model(model: str | None) -> str:
-    return model or os.getenv(MODEL_ENV_VAR, DEFAULT_MODEL)
+    return resolve_model_id(model)
 
 
 def _build_llm(model: str | None = None) -> ChatOpenAI:

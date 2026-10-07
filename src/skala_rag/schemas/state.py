@@ -18,6 +18,8 @@ from typing import Annotated, Any, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, Field, field_validator
 
+from skala_rag.config import DEFAULT_MODEL_ID
+
 
 # ---------------------------------------------------------------------------
 # 1. Enum
@@ -301,7 +303,7 @@ class RunConfig(BaseModel):
         default_factory=lambda: [TechName.KIVI, TechName.INFINIGEN]
     )
     domain: str = "클라우드 LLM 서빙"
-    model_id: str = "gpt-5.4-mini"                     # PDF B.1
+    model_id: str = DEFAULT_MODEL_ID                     # PDF B.1
     embedding_id: str = "intfloat/multilingual-e5-small"   # PDF B.5
     reference_date: str = Field(
         default_factory=lambda: datetime.now().date().isoformat()
