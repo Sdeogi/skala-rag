@@ -285,7 +285,7 @@ def test_markers_sit_at_the_end_of_their_clause_not_inside_the_sentence():
     ]
     numbered, citation_map = number_citations(sections, {"e1": {}, "e2": {}, "e3": {}})
     assert numbered[0]["paragraphs"] == [
-        "KIVI는 2비트로 압축하되 정확도는 유지했다(1)(2). InfiniGen은 CPU로 내보낸다(1)(2)(3).",  # trailing "근거: …" joins the last sentence
+        "KIVI는 2비트로 압축하되 정확도는 유지했다(1)(2). InfiniGen은 CPU로 내보낸다(1)-(3).",  # trailing "근거: …" joins the last sentence; three in a row become a range
         "TRL 3 충족(1); TRL 4 충족(2)(3); TRL 5 미충족 (통합 근거 미확인; 추가 확인 필요).",  # one marker group per ";" clause, none inside brackets
         "Fig. 3에서 보듯 증가한다(1).",  # an abbreviation's period does not end the clause
     ]
@@ -378,3 +378,26 @@ def test_accept_with_limits_lists_failed_quality_items_and_leaves_the_body_alone
     assert all(before[heading] == after[heading] for heading in before if heading != "6. 한계점")
     state["quality_result"] = {**quality("pass"), "passed": True}
     assert build_report(state)["revision"] == {"number": 0}
+
+
+def test_consecutive_citations_are_written_as_a_range():
+    from skala_rag.agents.report import expand_markers, format_markers, plain_text
+
+    assert [format_markers(numbers) for numbers in ([1, 2], [1, 2, 3], range(1, 8), [1, 3, 5], [1, 2, 3, 5, 6, 7, 9])] == [
+        "(1)(2)", "(1)-(3)", "(1)-(7)", "(1)(3)(5)", "(1)-(3), (5)-(7), (9)",
+    ]
+    ids = {f"e{number}": {} for number in range(1, 12)}
+    sections = [
+        {
+            "heading": "h",
+            "paragraphs": ["KIVI는 보고됐다 " + " ".join(f"[e{number}]" for number in range(1, 8)) + ".", "짧은 인용이다 [e1] [e2]."],
+            "table": {"columns": ["근거"], "rows": [[" ".join(f"[e{number}]" for number in range(1, 6))], ["[e9] [e11]"]]},
+            "level": 1,
+        }
+    ]
+    numbered, citation_map = number_citations(sections, ids)
+    assert numbered[0]["paragraphs"] == ["KIVI는 보고됐다(1)-(7).", "짧은 인용이다(1)(2)."]
+    assert numbered[0]["table"]["rows"] == [["(1)-(5)"], ["(8)(9)"]]
+    assert expand_markers("(1)-(3), (5)(9)") == [1, 2, 3, 5, 9]
+    # 번호 매긴 문장과 번호 매기기 전 문장이 같은 글로 비교된다(수정 지시의 quote 대조)
+    assert plain_text("KIVI는 보고됐다(1)-(7).") == plain_text("KIVI는 보고됐다 [e1] [e2] [e3] [e4] [e5] [e6] [e7].") == "KIVI는 보고됐다."

@@ -80,6 +80,11 @@ META_PATTERN = re.compile(r"이 보고서|본 보고서|검토했다|정리했�
 
 CITATION_TOKEN = re.compile(r"\[([^\[\]]+)\]")
 PAREN_MARKER = re.compile(r"\((\d{1,3}(?:\s*[,，]\s*\d{1,3})*)\)")  # 각주 표시 (1), (1)(2), (1, 2). 네 자리 이상(연도)은 제외
+# 범위 표기: (1)-(7), (1-7), [1]-[7], [1-7] (하이픈, 엔 대시, 물결표). 논문식으로 긴 인용을 줄여 쓴 것이다.
+PAREN_RANGE = re.compile(r"\((\d{1,3})\)\s*[-\u2013~]\s*\((\d{1,3})\)|\((\d{1,3})\s*[-\u2013~]\s*(\d{1,3})\)")
+BRACKET_RANGE = re.compile(r"\[(\d{1,3})\]\s*[-\u2013~]\s*\[(\d{1,3})\]|\[(\d{1,3})\s*[-\u2013~]\s*(\d{1,3})\]")
+_MARKER = r"\(\d{1,3}(?:\s*[,，]\s*\d{1,3})*\)"
+MARKER_RUN = re.compile(rf"(?:{PAREN_RANGE.pattern}|{_MARKER})(?:\s*,?\s*(?:{PAREN_RANGE.pattern}|{_MARKER}))*")  # (1)-(3), (5)(7) 한 묶음
 LEADING_ENUMERATOR = re.compile(r"^\s*\(\d{1,3}\)\s+")  # 문단 맨 앞의 "(1) 항목"은 목록 번호이지 각주 표시가 아니다
 FOOTNOTE_HEADING = "각주"
 FOOTNOTE_SECTIONS = (FOOTNOTE_HEADING, "부록")  # 부록은 각주 이전 형식의 근거 목록 이름
@@ -245,7 +250,7 @@ def _norm(text: str) -> str:
 
 def _plain(text: str) -> str:
     """인용 표기(``[1]``, ``(1)``)를 지우고 그 자리의 공백도 정리한 글(Judge 인용문 대조용)."""
-    return _norm(re.sub(r"\s+([.,;:)])", r"\1", PAREN_MARKER.sub("", CITATION_TOKEN.sub("", text or ""))))
+    return _norm(re.sub(r"\s+([.,;:)])", r"\1", MARKER_RUN.sub("", CITATION_TOKEN.sub("", BRACKET_RANGE.sub("", text or "")))))
 
 
 def _clip(text: Any, limit: int = QUOTE_LIMIT) -> str:
@@ -267,10 +272,13 @@ def resolve_citations(
 
     인용 표시는 세 가지를 읽는다. 각주 표시 ``(1)``, ``(1)(2)``, ``(1, 2)``(``parens=True``이고 ``citation_map``이 있을 때만,
     문단 맨 앞의 ``(1) 항목``은 목록 번호라서 제외), 번호 ``[1]``(``citation_map``이 있을 때), 근거 ID ``[근거 ID]``.
-    ``[상충]``처럼 근거 ID 모양이 아닌 대괄호와 ``[REDACTED]``, ``[R1]`` 같은 라벨은 인용으로 보지 않는다.
+    긴 인용을 줄인 범위 ``(1)-(7)``, ``(1-7)``, ``[1]-[7]``, ``[1-7]``은 사이의 번호를 모두 펼쳐 센다. 범위의 끝이 ``citation_map``
+    밖이거나 거꾸로 된 범위는 존재하지 않는 인용이다. ``[상충]``처럼 근거 ID 모양이 아닌 대괄호와 ``[REDACTED]``, ``[R1]``
+    같은 라벨은 인용으로 보지 않는다.
     """
     ids: list[str] = []
     unknown: list[str] = []
+    highest = max((int(key) for key in citation_map if str(key).isdigit()), default=0)
 
     def add_number(number: str, label: str) -> None:
         evidence_id = citation_map.get(number)
@@ -279,7 +287,17 @@ def resolve_citations(
         else:
             unknown.append(label)
 
-    for token in CITATION_TOKEN.findall(text or ""):
+    def take_range(match: re.Match[str]) -> str:
+        low, high = (int(match.group(1)), int(match.group(2))) if match.group(1) else (int(match.group(3)), int(match.group(4)))
+        if 1 <= low <= high <= highest:
+            for number in range(low, high + 1):
+                add_number(str(number), match.group(0))
+        else:
+            unknown.append(match.group(0))
+        return " "
+
+    scan = BRACKET_RANGE.sub(take_range, text or "") if citation_map else text or ""
+    for token in CITATION_TOKEN.findall(scan):
         token = token.strip()
         if IGNORED_TOKEN.fullmatch(token):
             continue
@@ -292,7 +310,7 @@ def resolve_citations(
             else:
                 unknown.append(f"[{token}]")
     if parens and citation_map:
-        body = LEADING_ENUMERATOR.sub("", text or "", count=1)
+        body = PAREN_RANGE.sub(take_range, LEADING_ENUMERATOR.sub("", scan, count=1))
         for group in PAREN_MARKER.findall(body):
             for number in re.findall(r"\d+", group):
                 add_number(number, f"({number})")

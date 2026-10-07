@@ -243,3 +243,9 @@ def test_footnote_markers_go_back_to_bracketed_numbers_but_list_numbers_stay():
     assert bracketed("(1) 첫 항목이다(2).\n(2) 둘째 항목이다(3).") == "(1) 첫 항목이다 [2].\n(2) 둘째 항목이다 [3]."  # 줄 맨 앞의 (1)·(2)는 목록 번호
     assert bracketed("설명 | 조건 | (1)(3)") == "설명 | 조건 |  [1] [3]"  # 표 칸에 홀로 있는 표시는 인용이다
     assert bracketed("KIVI(2024)와 f(1024)") == "KIVI(2024)와 f(1024)"  # 네 자리 이상은 표시가 아니다
+
+
+def test_footnote_ranges_go_back_to_bracketed_numbers():
+    assert bracketed("정확도는 유지했다(1)-(4).") == "정확도는 유지했다 [1] [2] [3] [4]."
+    assert bracketed("유지했다(1)-(3), (5), (7)-(9).") == "유지했다 [1] [2] [3] [5] [7] [8] [9]."
+    assert bracketed("(1) 첫 항목이다(2)-(4).") == "(1) 첫 항목이다 [2] [3] [4]."  # 줄 맨 앞의 (1)은 목록 번호

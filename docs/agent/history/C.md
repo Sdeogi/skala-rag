@@ -220,3 +220,32 @@
 - `bracketed` 없이 이전 판 문장을 쓰면 번호가 낡은 `(n)`으로 남아 새 번호와 어긋난다
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 132 passed, `pytest -q` 156 passed, `app.py --mode replay --fixture` 정상, `git diff --check` 통과. 실제 replay State에서 전체 루프를 실제 LLM(`gpt-5.4-mini`)으로 확인했다: 시장성 판정 이유에 우열 문장을 넣으면 1차 평가에서 중립성 1점과 지시 1건 → 작성기가 해당 표 칸 문장을 LLM으로 고쳐 씀(`replaced`, 수락 1·거부 0) → 우열 문장이 사라지고 2차 평가는 `pass`, 각주 문제 0건, PDF 9쪽. LLM 없이는 같은 지시로 문장이 삭제(`removed`)되고 역시 `pass`가 된다.
+
+## 2026-10-07 15:12 · sup/quality · piso
+
+**무엇을**: 본문에서 근거가 길게 이어질 때 `(1)(2)(3)(4)(5)(6)(7)` 대신 논문처럼 `(1)-(7)`로 줄여 쓰고, 평가기가 범위 표기를 읽어 사이의 번호를 모두 인용으로 검증하도록 했다.
+
+**왜**: 근거를 많이 모은 판정은 인용 표시가 문장 끝에서 길게 늘어난다(실제 보고서의 3장 한 문장에 인용 12개). 보고서 쪽에서만 줄이면 평가기가 `(1)`과 `(7)` 두 개만 인용으로 세고 사이의 번호는 놓쳐 각주 검증에 구멍이 생기고, 작성기의 문장 대조도 `-`가 남아 어긋난다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py` (D 소유)
+  - `format_markers(numbers)` 추가: 연속한 번호가 `RANGE_MIN`(3)개 이상이면 `(1)-(7)`로 묶는다. 2개 이하나 떨어진 번호는 그대로 둔다. 범위가 하나라도 있으면 묶음 사이를 `, `로 이어 쓴다(`(1)-(3), (5), (9)`), 범위가 없으면 이전처럼 붙여 쓴다(`(1)(3)(5)`). `number_citations`가 사용한다(본문과 표 칸 모두)
+  - `expand_markers(run)` 추가: 표시 묶음이 뜻하는 번호를 돌려준다(`(1)-(3), (5)` → 1, 2, 3, 5)
+  - `FOOTNOTE_MARKER`: 표시 하나가 아니라 범위와 쉼표로 이어진 한 묶음을 찾는다. `plain_text`가 범위 표기까지 지워 번호 매긴 문장과 매기기 전 문장이 같은 글로 비교된다
+- `src/skala_rag/agents/llm_output.py` (D 소유) — `bracketed`가 `expand_markers`로 범위를 `[1] [2] [3]`으로 펼쳐 이전 판 문장 재사용과 문장 고쳐 쓰기에 넘긴다
+- `src/skala_rag/agents/quality.py`
+  - `resolve_citations`: `(1)-(7)`, `(1-7)`, `[1]-[7]`, `[1-7]`(하이픈, 엔 대시, 물결표)을 펼쳐 사이의 번호를 모두 센다. 범위 끝이 `citation_map` 밖이거나 거꾸로 된 범위(`(7)-(1)`)는 존재하지 않는 인용이다. 대괄호 범위는 인용을 쓰는 모든 장에서, 괄호 범위는 `parens=True`인 장에서만 읽는다
+  - `PAREN_RANGE`, `BRACKET_RANGE`, `MARKER_RUN` 추가. `_plain`(Judge 인용문 대조)이 범위까지 지운다
+  - 그 결과 `footnote_findings`가 범위 가운데 번호의 각주 누락도 잡는다
+- `tests/test_quality.py`, `tests/test_output.py`, `tests/test_llm_output.py` — 범위 표기 테스트 추가, 번호 3개가 연속이면 범위가 되는 것에 맞춰 기존 기대값 1곳 수정
+
+**남의 파일**: `report.py`, `llm_output.py`, `tests/test_output.py`, `tests/test_llm_output.py`는 트랙 D 소유다. 인용 표시를 만들고 읽는 곳에 한정한 최소 수정이다.
+
+**인터페이스 영향**: 본문과 표의 인용 표시가 `(1)(2)(3)` 대신 `(1)-(3)`일 수 있다. `report["citation_map"]`과 각주 표는 그대로다(각주는 번호마다 한 행). 인용 표시를 직접 파싱하는 코드는 `expand_markers`(또는 평가기의 `resolve_citations`)를 써야 한다.
+
+**충돌 시 지켜야 할 것**:
+- `FOOTNOTE_MARKER`를 표시 하나만 찾는 정규식으로 되돌리지 않는다. `(1)-(7)`에서 양 끝만 지워지고 `-`가 남아 수정 지시가 `not_found`가 된다
+- `number_citations`가 번호를 항상 `(n)`으로 하나씩 쓰도록 되돌리면 평가에는 문제가 없지만 긴 인용이 다시 길어진다. 평가기는 두 방식 모두 읽는다
+- 평가기의 범위 해석(`take_range`)을 끝 번호만 세도록 줄이지 않는다. 범위 가운데 번호의 각주 누락을 놓친다
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 138 passed, `pytest -q` 162 passed, `app.py --mode replay --fixture` 정상, `git diff --check` 통과. 평가기가 범위를 못 읽게 하는 변이와 보고서가 범위를 안 만들게 하는 변이를 각각 테스트가 잡는다. 실제 replay State: PDF 10쪽, 범위가 든 문단 5개와 표 칸 1개(3장에 `(3), (10)-(21)`), 각주 문제 0건, 알 수 없는 인용 0건. 범위가 든 SUMMARY 문장을 지우라는 지시도 작성기가 처리했다(`removed`).

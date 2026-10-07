@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from skala_rag.graph.state import metric_event
 
 from .llm_utils import invoke_structured
-from .report import FOOTNOTE_MARKER, REVISING_ACTIONS, SUMMARY_LIMIT, _redact, build_report, locate_instruction, plain_text, revision_plan
+from .report import FOOTNOTE_MARKER, REVISING_ACTIONS, SUMMARY_LIMIT, _redact, build_report, expand_markers, locate_instruction, plain_text, revision_plan
 from .synthesis import synthesize
 
 RANKING_PATTERN = re.compile(r"우승|총점|순위|도입 추천|선택해야|더 우수|가장 우수|추천한다|승자")
@@ -48,7 +48,7 @@ def trim_to_sentences(text: str, limit: int) -> str:
 
 
 def bracketed(text: str) -> str:
-    """Footnote markers ``(1)(2)`` of a built report back to ``[1] [2]`` tokens, which the revision helpers below read.
+    """Footnote markers ``(1)(2)`` and ranges ``(1)-(3)`` of a built report back to ``[1] [2] [3]`` tokens, which the revision helpers below read.
 
     A ``(1) item`` at the start of a line is a list number, not a marker, and stays as written.
     """
@@ -57,7 +57,7 @@ def bracketed(text: str) -> str:
         before, after = text[: match.start()], text[match.end() : match.end() + 1]
         if (not before or before.endswith("\n")) and after[:1].isspace():
             return match.group(0)
-        return "".join(f" [{number}]" for number in re.findall(r"\d+", match.group(0)))
+        return "".join(f" [{number}]" for number in expand_markers(match.group(0)))
 
     return FOOTNOTE_MARKER.sub(convert, text or "")
 

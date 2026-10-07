@@ -218,7 +218,7 @@ def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -
             else:
                 parts.append((body, found))
         return " ".join(
-            _attach(body, "".join(f"({number})" for number in sorted(set(found), key=int))) if found else body for body, found in parts
+            _attach(body, format_markers(found)) if found else body for body, found in parts
         )
 
     numbered: list[dict[str, Any]] = []
@@ -238,7 +238,46 @@ REMOVED_NOTE = "(품질 평가 지적에 따라 해당 문장을 삭제했다.)"
 SENTENCE = re.compile(r".+?(?:\.(?=\s|$)|$)(?:\s*\[[^\[\]]+\])*\s*", re.S)
 
 
-FOOTNOTE_MARKER = re.compile(r"\(\d{1,3}(?:\s*,\s*\d{1,3})*\)")
+RANGE_MIN = 3  # this many consecutive footnote numbers or more are written as a range: (1)-(7)
+_MARKER_UNIT = r"\(\d{1,3}(?:\s*,\s*\d{1,3})*\)"
+_MARKER_RANGE = r"\(\d{1,3}\)\s*[-\u2013~]\s*\(\d{1,3}\)"
+# One run of footnote markers as the report writes it: (1)  (1)(2)  (1)-(7)  (1)-(3), (5), (9)
+FOOTNOTE_MARKER = re.compile(rf"(?:{_MARKER_RANGE}|{_MARKER_UNIT})(?:\s*,?\s*(?:{_MARKER_RANGE}|{_MARKER_UNIT}))*")
+
+
+def format_markers(numbers: Any) -> str:
+    """Footnote markers for a set of numbers: ``(1)(2)``, and ``(1)-(7)`` for a run of ``RANGE_MIN`` or more.
+
+    Runs and the numbers around them are separated by ``, ``: ``(1)-(3), (5), (9)``. Without a range the
+    markers are written one after the other: ``(1)(3)(5)``.
+    """
+    groups: list[list[int]] = []
+    for value in sorted({int(number) for number in numbers}):
+        if groups and value == groups[-1][1] + 1:
+            groups[-1][1] = value
+        else:
+            groups.append([value, value])
+    parts: list[str] = []
+    has_range = False
+    for start, end in groups:
+        if end - start + 1 >= RANGE_MIN:
+            parts.append(f"({start})-({end})")
+            has_range = True
+        else:
+            parts.extend(f"({value})" for value in range(start, end + 1))
+    return ", ".join(parts) if has_range else "".join(parts)
+
+
+def expand_markers(run: str) -> list[int]:
+    """The numbers a run of footnote markers stands for: ``(1)-(3), (5)`` gives ``[1, 2, 3, 5]``."""
+    numbers: list[int] = []
+    for start, end, group in re.findall(r"\((\d{1,3})\)\s*[-\u2013~]\s*\((\d{1,3})\)|\((\d{1,3}(?:\s*,\s*\d{1,3})*)\)", run):
+        if start:
+            low, high = int(start), int(end)
+            numbers.extend(range(low, high + 1) if low <= high else (low, high))
+        else:
+            numbers.extend(int(number) for number in re.findall(r"\d+", group))
+    return numbers
 
 
 def plain_text(text: Any) -> str:

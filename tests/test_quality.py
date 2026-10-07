@@ -8,6 +8,7 @@ from conftest import FIELDS, LABELS, TECHS, FakeModel
 from langchain_core.messages import AIMessage
 
 from skala_rag.agents.quality import (
+    MARKER_RUN,
     QualityEvaluator,
     QualityResult,
     JudgeVerdict,
@@ -438,7 +439,7 @@ def test_judge_quotes_are_found_across_cells_citations_and_sentences():
     cross_cells = f"{row.cells['항목']} | {row.cells['판정']}"  # 칸 둘에 걸친 인용
     assert evaluator._locate(cross_cells, parsed).text == row.cells["판정 이유"]
     sentence = sample_sentence(state)
-    without_citations = re.sub(r"\(\d{1,3}\)", "", re.sub(r"\s*\[[^\[\]]+\]", "", sentence))  # 각주 표시를 생략한 인용
+    without_citations = MARKER_RUN.sub("", re.sub(r"\s*\[[^\[\]]+\]", "", sentence))  # 각주 표시(범위 포함)를 생략한 인용
     assert evaluator._locate(without_citations, parsed).text == sentence
     assert evaluator._locate("…" + sentence[:20] + "…", parsed) is not None
     assert evaluator._locate("보고서에 없는 문장이다", parsed) is None
@@ -635,3 +636,65 @@ def test_weak_expressions_get_instructions_only_when_they_alone_fail_the_item():
     result, _, _ = evaluate(state)
     assert result["items"]["neutrality"]["rule_score"] == 3 and not result["passed"]
     assert len([entry for entry in result["instructions"] if entry["item"] == "neutrality"]) == 3
+
+
+# ── 범위 표기 (1)-(7) ──
+def test_ranges_are_expanded_in_every_notation():
+    evidence = {f"id{number}": {} for number in range(1, 11)}
+    citation_map = {str(number): f"id{number}" for number in range(1, 11)}
+
+    def numbers(text, **kwargs):
+        ids, unknown = resolve_citations(text, citation_map, evidence, **kwargs)
+        return [int(identifier[2:]) for identifier in ids], unknown
+
+    assert numbers("보고됐다(1)-(7).", parens=True) == (list(range(1, 8)), [])
+    assert numbers("보고됐다(1)-(3), (5)-(7), (9).", parens=True) == ([1, 2, 3, 5, 6, 7, 9], [])
+    assert numbers("보고됐다(2-5).", parens=True) == ([2, 3, 4, 5], [])
+    assert numbers("보고됐다 [1]-[7].") == (list(range(1, 8)), [])  # 대괄호 표기는 인용을 쓰는 모든 장에서 읽는다
+    assert numbers("보고됐다 [2-5].") == ([2, 3, 4, 5], [])
+    assert numbers("보고됐다(1)(2).", parens=True) == ([1, 2], [])
+    assert numbers("(2) 둘째 항목이다(1)-(3).", parens=True) == ([1, 2, 3], [])  # 문단 맨 앞 (2)는 목록 번호
+    assert numbers("보고됐다(1)-(7).") == ([], [])  # 인용을 쓰지 않는 장의 (n)은 읽지 않는다
+    assert numbers("보고됐다(1)-(99).", parens=True) == ([], ["(1)-(99)"])  # 끝이 citation_map 밖
+    assert numbers("보고됐다(7)-(1).", parens=True) == ([], ["(7)-(1)"])  # 거꾸로 된 범위
+    assert numbers("보고됐다 [1]-[99].") == ([], ["[1]-[99]"])
+
+
+def state_with_a_five_evidence_judgment() -> dict:
+    state = make_state()
+    for number in range(1, 6):
+        state["evidence"][f"X-{number}"] = {**state["evidence"]["KIVI-w1"], "claim": f"추가 근거 {number}", "quote": f"extra quote {number}"}
+    state["market_analysis"]["technologies"]["KIVI"]["market_size"]["evidence_ids"] = [f"X-{number}" for number in range(1, 6)]
+    state["report"] = build_report(state)
+    section(state, "6.")["paragraphs"] = [DISCLOSURE]
+    return state
+
+
+def test_a_run_of_citations_is_written_as_a_range_and_every_number_in_it_is_verified():
+    state = state_with_a_five_evidence_judgment()
+    cell = next(row[-1] for row in section(state, "4.1")["table"]["rows"] if row[0] == "KIVI" and row[1] == "시장 규모와 성장")
+    match = re.fullmatch(r"\((\d+)\)-\((\d+)\)", cell)
+    assert match and int(match.group(2)) - int(match.group(1)) == 4  # 근거 5개가 한 범위로 줄었다
+    result, _, evaluator = evaluate(state)
+    assert evaluator.last_measurements["groundedness"]["footnote_problems"] == 0 and result["items"]["groundedness"]["score"] == 5
+    middle = str(int(match.group(1)) + 2)  # 범위 가운데 번호의 각주를 지우면 잡아야 한다(끝 번호만 보면 놓친다)
+    footnote_rows(state)[:] = [row for row in footnote_rows(state) if row[0] != f"({middle})"]
+    broken, _, evaluator = evaluate(state)
+    assert broken["items"]["groundedness"]["score"] == 1
+    assert any(f"({middle})" in item["problem"] and "각주가 없음" in item["problem"] for item in broken["instructions"])
+
+
+def test_a_range_to_a_number_that_does_not_exist_is_an_unknown_citation():
+    state = state_with_a_five_evidence_judgment()
+    add_paragraph(state, "5.", "KIVI는 여러 조건에서 보고됐다(1)-(99).")
+    result, _, _ = evaluate(state)
+    assert result["items"]["groundedness"]["score"] == 1
+    assert any("(1)-(99)" in item["problem"] for item in result["instructions"])
+
+
+def test_judge_quotes_without_a_range_marker_are_still_found():
+    state = state_with_a_five_evidence_judgment()
+    parsed = parse_report(state["report"], list(TECHS), state["evidence"])
+    sentence = next(text.text for text in parsed.texts if re.search(r"\(\d+\)-\(\d+\)", text.text) and text.where.startswith("문단"))
+    quote = MARKER_RUN.sub("", sentence)
+    assert "-(" not in quote and QualityEvaluator()._locate(quote, parsed).text == sentence
