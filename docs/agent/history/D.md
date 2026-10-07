@@ -52,3 +52,40 @@
 - `LLMReportAgent`가 SUMMARY를 `report["sections"][0]`에 직접 써넣던 옛 방식으로 되돌리면 안 된다. 번호가 등장 순서와 어긋나고 `citation_map`과 불일치가 생긴다
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 65 passed, `app.py --mode replay --fixture` 실행 정상(부록 `[1]`/`[2]`, REFERENCE `[R1]`/`[R2]`)
+
+## 2026-10-07 14:00 · sup/report · deogi
+
+**무엇을**: 보고서 PDF가 10쪽을 넘지 않도록 분량 예산(`Layout`)을 두고, 넘으면 더 빡빡한 예산으로 자동으로 다시 만들게 함. 부록을 표로 바꾸고 1·2장 정적 문단을 줄임
+
+**왜**: 과제의 보고서 분량 상한이 10쪽이다. 근거 60건·출처 20개 규모의 State로 재 보니 기존 구성은 27쪽이었다(5장 쌍 나열과 부록이 각각 약 2만 7천 자).
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `Layout`(dataclass)와 `LAYOUTS`(수준 0~2), `MAX_PDF_PAGES = 10` 추가. 수준이 올라갈수록 5장 쌍 개수, 표 칸 길이, 부록 인용 구절 길이, 3장 항목 수가 줄어듦
+  - `build_report`를 둘로 나눔: `_compose(state, summary, layout)`가 한 번 조립하고, `build_report(state, *, summary=None)`가 수준 0부터 조립 → 메모리에서 PDF 쪽수 확인 → 넘으면 다음 수준으로 반복. 결과에 `report["layout"] = {level, pdf_pages, max_pages, fits}` 기록
+  - `pdf_page_count(report)` 추가. `_write_pdf`는 경로나 `BytesIO`를 받고 `(글꼴, 쪽수)`를 반환하도록 변경(전에는 글꼴만 반환)
+  - `_clip_sentences(text, limit)` 추가: 문장 끝에서 자르고 `[인용]` 중간에서는 자르지 않음. 4장 표의 이유·조건 칸과 5장 쌍 문장에 적용
+  - `_evidence_lines` 삭제 → `_evidence_table`로 대체. 부록이 문단 목록이 아니라 표(`번호, 기술, 출처, 위치·유형, 인용 구절`)가 됨. `QUOTE_LIMIT` 상수 삭제(`Layout.quote`가 대신함)
+  - `_synthesis_paragraphs`: 앞에서부터 `Layout.conflicts`/`Layout.agreements`개만 싣고 생략한 개수를 첫 문단에 밝힘
+  - `_trl_details`: 충족 단계는 근거만, 첫 미충족 단계만 사유를 붙이고 그 위 단계는 이름만 나열
+  - `_technical_section`, `_judgment_rows`에 `layout` 인자 추가(기본값은 수준 0)
+  - `save_outputs`: manifest에 `pdf_pages`, `layout` 추가
+  - 부록·REFERENCE는 PDF에서 작은 글꼴(`SMALL_SECTIONS`)로 렌더링
+- `src/skala_rag/agents/report_static.py` — `background_paragraphs`를 4문단 → 3문단, `SELECTION_PARAGRAPHS`를 5문단 → 3문단으로 줄임. 내용(선정 기준, HW 분류 이유, 미선정 사유)은 유지하고 비교표와 겹치는 기술 설명만 뺌
+- `tests/test_output.py` — `large_state()` 헬퍼와 쪽수 제한·문장 자르기 테스트 3개 추가, 부록 관련 단언을 표 기준으로 수정
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- "부록. 근거 목록" 섹션의 내용이 `paragraphs`에서 `table`로 옮겨감(`paragraphs`는 빈 리스트). 본문 섹션의 구조와 장 제목은 그대로
+- `report["layout"]`가 새로 생김. manifest에 `pdf_pages`, `layout` 추가
+- `build_report`가 내부에서 PDF를 메모리로 렌더링하므로 호출 한 번이 수십~수백 ms 걸림
+
+**충돌 시 지켜야 할 것**:
+- `build_report`의 수준 반복(`for layout in LAYOUTS`)을 한 번 호출로 되돌리면 10쪽 제한이 사라진다
+- 보고서 본문을 만드는 함수에 길이를 줄이는 인자를 새로 넣을 때는 `Layout`에 필드를 추가해 `_compose`에서 넘긴다. 함수 안에 고정 길이 상수를 두면 자동 축소가 그 부분에 적용되지 않는다
+- 5장에 쌍을 전부 싣도록 되돌리면 안 된다. 쌍이 28개인 경우 5장만 2만 7천 자가 된다
+- 부록을 "모든 근거" 목록으로 되돌리면 안 된다(인용된 근거만 싣는다)
+- `_write_pdf`의 반환 값은 튜플이다. 글꼴만 받던 호출부를 되살리면 `save_outputs`가 깨진다
+
+**확인**: pytest 68 passed. 근거 60건·출처 20개 State: 수준 0에서 13쪽 → 수준 1에서 10쪽으로 확정. 근거 90건·출처 30개에 SUMMARY 1200자·오류 8건을 더한 경우: 수준 2에서 10쪽

@@ -15,10 +15,12 @@ and the appendix and REFERENCE list only what the body actually cites.
 from __future__ import annotations
 
 import glob
+import io
 import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -44,9 +46,34 @@ from .synthesis import limitation_lines
 logger = logging.getLogger(__name__)
 
 SUMMARY_LIMIT = 1200  # roughly half an A4 page of Korean text
-QUOTE_LIMIT = 300
+MAX_PDF_PAGES = 10  # assignment limit
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Length budget of one report build. Higher levels are tried only when the PDF exceeds ``MAX_PDF_PAGES``."""
+
+    level: int
+    conflicts: int  # cross-perspective pairs shown in chapter 5
+    agreements: int
+    pair_reason: int  # characters
+    pair_uncertainty: int
+    pair_condition: int
+    cell_reason: int  # judgment table cells
+    cell_conditions: int
+    quote: int  # appendix quote; 0 drops the quote column content
+    list_items: int  # items per category in chapter 3
+
+
+LAYOUTS = (
+    Layout(0, conflicts=4, agreements=2, pair_reason=320, pair_uncertainty=220, pair_condition=120, cell_reason=200, cell_conditions=140, quote=110, list_items=4),
+    Layout(1, conflicts=3, agreements=1, pair_reason=260, pair_uncertainty=180, pair_condition=90, cell_reason=150, cell_conditions=100, quote=70, list_items=3),
+    Layout(2, conflicts=2, agreements=0, pair_reason=200, pair_uncertainty=140, pair_condition=60, cell_reason=110, cell_conditions=70, quote=0, list_items=2),
+)
+SMALL_SECTIONS = ("부록. 근거 목록", "REFERENCE")  # rendered in the small font
 KEY_FIELDS = (("market", "adoption"), ("stakeholder", "adopter_view"), ("domain", "memory"), ("trl", "trl"))
 JUDGMENT_COLUMNS = ["기술", "항목", "판정", "판정 이유", "성립 조건", "근거"]
+EVIDENCE_COLUMNS = ["번호", "기술", "출처", "위치·유형", "인용 구절"]
 MEASUREMENT_COLUMNS = ["기술", "지표", "값", "비교 기준", "측정 조건", "출처 위치"]
 PERSPECTIVE_NOTES = {
     "market": "판정 라벨은 자료가 기술을 직접 다루는지(시장 규모와 성장), 실제 제품·서비스·프레임워크 적용 여부(상용화와 채택 현황), 후속 연구·파생 구현·표준화 움직임(생태계 지지)을 뜻한다. 같은 발표를 옮겨 쓴 기사 여러 건은 근거 하나로 센다.",
@@ -96,6 +123,21 @@ def _redact(value: Any) -> Any:
 def _clip(text: Any, limit: int) -> str:
     value = " ".join(str(text or "").split())
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _clip_sentences(text: Any, limit: int) -> str:
+    """Shorten to ``limit`` characters at a sentence end; never cut inside a ``[citation]``."""
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    head = value[:limit]
+    cut = max(head.rfind(". "), head.rfind("다. "), head.rfind("; "))
+    if cut >= limit // 2:
+        return head[: cut + (2 if head[cut] == "다" else 1)].rstrip(" ;")
+    head = head[: limit - 1]
+    if head.rfind("[") > head.rfind("]"):
+        head = head[: head.rfind("[")]
+    return head.rstrip() + "…"
 
 
 def _citations(ids: list[str], evidence: dict[str, Any]) -> str:
@@ -204,7 +246,7 @@ def deterministic_summary(state: GraphState) -> list[str]:
     return [text]
 
 
-def _technical_section(state: GraphState) -> tuple[list[str], dict[str, Any] | None]:
+def _technical_section(state: GraphState, layout: Layout = LAYOUTS[0]) -> tuple[list[str], dict[str, Any] | None]:
     evidence = state.get("evidence") or {}
     findings_all = state.get("technical_findings") or {}
     known = {"principle", "experiment_conditions", "performance", "measurements", "limitations", "evidence_ids"}
@@ -221,13 +263,13 @@ def _technical_section(state: GraphState) -> tuple[list[str], dict[str, Any] | N
             paragraphs.append(f"{technology}의 핵심 원리: {findings['principle']}" + (f" 근거: {cite}" if cite else ""))
             written = True
         if findings.get("experiment_conditions"):
-            paragraphs.append(f"{technology}의 실험 조건: " + "; ".join(str(item) for item in findings["experiment_conditions"]))
+            paragraphs.append(f"{technology}의 실험 조건: " + "; ".join(str(item) for item in findings["experiment_conditions"][: layout.list_items]))
             written = True
         if findings.get("performance"):
-            paragraphs.append(f"{technology}의 성능 보고: " + "; ".join(str(item) for item in findings["performance"]))
+            paragraphs.append(f"{technology}의 성능 보고: " + "; ".join(str(item) for item in findings["performance"][: layout.list_items]))
             written = True
         if findings.get("limitations"):
-            paragraphs.append(f"{technology}의 한계: " + "; ".join(str(item) for item in findings["limitations"]))
+            paragraphs.append(f"{technology}의 한계: " + "; ".join(str(item) for item in findings["limitations"][: layout.list_items]))
             written = True
         extras = []
         for key, value in findings.items():
@@ -263,7 +305,7 @@ def _technical_section(state: GraphState) -> tuple[list[str], dict[str, Any] | N
     return paragraphs, table
 
 
-def _judgment_rows(state: GraphState, perspective: str, passed: set[tuple[str, str, str]], has_checks: bool) -> list[list[str]]:
+def _judgment_rows(state: GraphState, perspective: str, passed: set[tuple[str, str, str]], has_checks: bool, layout: Layout = LAYOUTS[0]) -> list[list[str]]:
     evidence = state.get("evidence") or {}
     result = state.get(f"{perspective}_analysis") or {}
     rows: list[list[str]] = []
@@ -285,8 +327,8 @@ def _judgment_rows(state: GraphState, perspective: str, passed: set[tuple[str, s
                     technology,
                     title,
                     label,
-                    str(judgment.get("reason") or "설명 미확인"),
-                    str(judgment.get("conditions") or ""),
+                    _clip_sentences(judgment.get("reason") or "설명 미확인", layout.cell_reason),
+                    _clip_sentences(judgment.get("conditions") or "", layout.cell_conditions),
                     cite or "미확인",
                 ]
             )
@@ -305,18 +347,30 @@ def _trl_details(state: GraphState) -> list[str]:
             parts.append(f"확인된 최고 단계 {judgment['highest_confirmed']}")
         stages = judgment.get("stages") or {}
         if isinstance(stages, dict) and stages:
-            described = []
+            # Met stages carry their evidence; only the first unmet stage keeps its note, the rest are listed.
+            described: list[str] = []
+            later: list[str] = []
             for stage, detail in stages.items():
                 if not isinstance(detail, dict):
                     continue
                 cite = _citations(list(detail.get("evidence_ids") or []), evidence)
-                status = "충족" if detail.get("met") else str(detail.get("verdict") or "미충족")
-                note = _clip(detail.get("note") or "", 160).rstrip(".")
-                described.append(f"{stage} {status}{(' ' + cite) if cite else ''}{(' (' + note + ')') if note else ''}")
+                if detail.get("met"):
+                    described.append(f"{stage} 충족{(' ' + cite) if cite else ''}")
+                    later = []  # stages below a met stage are not "remaining"
+                    continue
+                status = str(detail.get("verdict") or "미충족")
+                if later:
+                    later.append(f"{stage} {status}")
+                    continue
+                note = _clip(detail.get("note") or "", 120).rstrip(".")
+                later.append(f"{stage} {status}{(' (' + note + ')') if note else ''}")
+            described.extend(later[:1])
             if described:
                 parts.append("단계별 확인: " + "; ".join(described))
+            if len(later) > 1:
+                parts.append("그 위 단계: " + ", ".join(later[1:]))
         if judgment.get("missing_evidence"):
-            parts.append("다음 단계를 위해 확인하지 못한 증거: " + "; ".join(_clip(item, 220).rstrip(".") for item in judgment["missing_evidence"]))
+            parts.append("다음 단계를 위해 확인하지 못한 증거: " + "; ".join(_clip(item, 160).rstrip(".") for item in judgment["missing_evidence"][:1]))
         if judgment.get("estimation_note"):
             parts.append(f"추정 근거: {str(judgment['estimation_note']).rstrip('.')}")
         if parts:
@@ -324,22 +378,27 @@ def _trl_details(state: GraphState) -> list[str]:
     return lines
 
 
-def _synthesis_paragraphs(synthesis: dict[str, Any], evidence: dict[str, Any]) -> list[str]:
+def _synthesis_paragraphs(synthesis: dict[str, Any], evidence: dict[str, Any], layout: Layout = LAYOUTS[0]) -> list[str]:
     conflicts = synthesis.get("conflicts") or []
     agreements = synthesis.get("agreements") or []
     lines = [
         f"관점 간 상충 쌍 {len(conflicts)}개, 일치 쌍 {len(agreements)}개를 확인했다. 총점이나 순위 대신 각 쌍이 성립하는 조건과 남은 불확실성을 나란히 제시한다."
     ]
-    for pairs, title in ((conflicts, "상충"), (agreements, "일치")):
+    shown = ((conflicts[: layout.conflicts], "상충"), (agreements[: layout.agreements], "일치"))
+    omitted = len(conflicts) + len(agreements) - sum(len(pairs) for pairs, _ in shown)
+    if omitted > 0:
+        lines[0] += f" 분량 제한에 따라 중요도가 높은 쌍부터 {sum(len(pairs) for pairs, _ in shown)}개를 싣고 나머지 {omitted}개는 생략했다."
+    for pairs, title in shown:
         for pair in pairs:
             first, second = pair["first"], pair["second"]
             cite = _citations(list(first["evidence_ids"]) + list(second["evidence_ids"]), evidence)
             left = f"{PERSPECTIVE_TITLES.get(first['perspective'], first['perspective'])}/{FIELD_TITLES.get(first['field'], first['field'])}"
             right = f"{PERSPECTIVE_TITLES.get(second['perspective'], second['perspective'])}/{FIELD_TITLES.get(second['field'], second['field'])}"
             lines.append(
-                f"[{title}] {pair['technology']}: {left}({first['label']}) 및 {right}({second['label']}). {_clip(pair['reason'], 600)} "
-                f"성립 조건: {left} '{_clip(first.get('conditions'), 200) or '조건 미기재'}' / {right} '{_clip(second.get('conditions'), 200) or '조건 미기재'}'. "
-                f"남은 불확실성: {_clip(pair['uncertainty'], 500)}" + (f" 근거: {cite}" if cite else "")
+                f"[{title}] {pair['technology']}: {left}({first['label']}) 및 {right}({second['label']}). {_clip_sentences(pair['reason'], layout.pair_reason)} "
+                f"성립 조건: {left} '{_clip_sentences(first.get('conditions'), layout.pair_condition) or '조건 미기재'}' / "
+                f"{right} '{_clip_sentences(second.get('conditions'), layout.pair_condition) or '조건 미기재'}'. "
+                f"남은 불확실성: {_clip_sentences(pair['uncertainty'], layout.pair_uncertainty)}" + (f" 근거: {cite}" if cite else "")
             )
     if len(lines) == 1:
         lines.append("확인된 근거로 구성할 수 있는 관점 간 쌍이 없다.")
@@ -381,29 +440,26 @@ def _limitations(state: GraphState, synthesis: dict[str, Any]) -> list[str]:
     return paragraphs
 
 
-def _evidence_lines(evidence: dict[str, Any], citation_map: dict[str, str], source_labels: dict[str, str]) -> list[str]:
-    """Appendix lines for cited evidence only, in citation-number order."""
-    lines: list[str] = []
+def _evidence_table(evidence: dict[str, Any], citation_map: dict[str, str], source_labels: dict[str, str], layout: Layout = LAYOUTS[0]) -> dict[str, Any]:
+    """Appendix table of cited evidence only, in citation-number order."""
+    rows: list[list[str]] = []
     for number, evidence_id in sorted(citation_map.items(), key=lambda pair: int(pair[0])):
         item = evidence[evidence_id]
-        quote = _clip(item.get("quote") or item.get("claim") or "인용 구절 미기재", QUOTE_LIMIT)
         source = source_labels.get(item.get("source_id"))
-        line = (
-            f"[{number}] {item.get('technology', '기술 미상')} / 출처 {f'[{source}]' if source else '미등록'} / "
-            f"위치 {item.get('location') or '미기재'} / 유형 {item.get('claim_type', '미기재')}. {quote}"
-        )
+        quote = _clip(item.get("quote") or item.get("claim") or "인용 구절 미기재", layout.quote) if layout.quote else ""
         if item.get("speaker"):
-            line += f" 발언 주체: {item['speaker']}" + (f"({item['stated_at']})" if item.get("stated_at") else "")
-        if item.get("conditions"):
-            line += f" 조건: {_clip(item['conditions'], 200)}"
-        measurement = item.get("measurement")
-        if isinstance(measurement, dict):
-            fields = ("metric", "value", "unit", "baseline", "model", "hardware", "context_length", "batch_size", "precision", "location")
-            described = "; ".join(f"{field}={measurement[field]}" for field in fields if measurement.get(field) not in (None, ""))
-            if described:
-                line += f" 측정: {described}"
-        lines.append(line)
-    return lines
+            speaker = f"발언 주체 {item['speaker']}" + (f"({item['stated_at']})" if item.get("stated_at") else "")
+            quote = f"{speaker}: {quote}" if quote else speaker
+        rows.append(
+            [
+                f"[{number}]",
+                str(item.get("technology") or "기술 미상"),
+                f"[{source}]" if source else "미등록",
+                f"{item.get('location') or '위치 미기재'} / {item.get('claim_type', '유형 미기재')}",
+                quote,
+            ]
+        )
+    return {"columns": EVIDENCE_COLUMNS, "rows": rows}
 
 
 def _site_name(url: Any) -> str:
@@ -430,8 +486,8 @@ def format_reference(label: str, source: dict[str, Any]) -> str:
     return f"[{label}] {text}"
 
 
-def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict[str, Any]:
-    """Build the report. ``summary`` replaces the rule-based SUMMARY; it cites raw evidence IDs."""
+def _compose(state: GraphState, summary: list[str] | None, layout: Layout) -> dict[str, Any]:
+    """One report build under a given length budget."""
     config = state["run_config"]
     technologies = config["technologies"]
     evidence = state.get("evidence") or {}
@@ -444,7 +500,7 @@ def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict
     sections.append(_section("1. 분석 배경", background_paragraphs(config)))
     selection_text, selection_table = selection_paragraphs(config)
     sections.append(_section("2. 기술 선정", selection_text, selection_table))
-    technical_text, technical_table = _technical_section(state)
+    technical_text, technical_table = _technical_section(state, layout)
     sections.append(_section("3. 기술 개요", technical_text, technical_table))
     sections.append(
         _section(
@@ -462,10 +518,11 @@ def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict
             paragraphs.extend(_trl_details(state))
         if not state.get(f"{name}_analysis"):
             paragraphs.append("이 관점의 결과가 생성되지 않았다. 6장 한계점의 실행 오류를 참고한다.")
-        rows = _judgment_rows(state, name, passed, has_checks)
+        rows = _judgment_rows(state, name, passed, has_checks, layout)
         sections.append(_section(f"4.{index} {PERSPECTIVE_TITLES[name]}", paragraphs, {"columns": JUDGMENT_COLUMNS, "rows": rows}, level=2))
-    sections.append(_section("5. 시사점", _synthesis_paragraphs(synthesis, evidence)))
+    sections.append(_section("5. 시사점", _synthesis_paragraphs(synthesis, evidence, layout)))
     sections.append(_section("6. 한계점", _limitations(state, synthesis)))
+
     # Number the body first: the appendix and REFERENCE list only what the body cites.
     sections, citation_map = number_citations(sections, evidence)
     used_source_ids = list(
@@ -476,7 +533,8 @@ def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict
         )
     )
     source_labels = {source_id: f"R{index}" for index, source_id in enumerate(used_source_ids, start=1)}
-    sections.append(_section("부록. 근거 목록", _evidence_lines(evidence, citation_map, source_labels) or ["인용된 근거 없음"]))
+    appendix = _evidence_table(evidence, citation_map, source_labels, layout)
+    sections.append(_section("부록. 근거 목록", [] if appendix["rows"] else ["인용된 근거 없음"], appendix))
     references = [format_reference(source_labels[source_id], sources[source_id]) for source_id in used_source_ids]
     sections.append(_section("REFERENCE", references or ["검증된 출처 없음"]))
 
@@ -489,6 +547,25 @@ def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict
         "used_source_ids": used_source_ids,
         "generation_mode": "deterministic",
     }
+
+
+def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict[str, Any]:
+    """Build the report within the page limit.
+
+    ``summary`` replaces the rule-based SUMMARY; it cites raw evidence IDs. The
+    report is laid out with the roomiest budget first and rebuilt with tighter
+    ones while the rendered PDF exceeds ``MAX_PDF_PAGES``. ``report["layout"]``
+    records the level used, the page count and whether it fits.
+    """
+    report: dict[str, Any] = {}
+    pages = 0
+    for layout in LAYOUTS:
+        report = _compose(state, summary, layout)
+        pages = pdf_page_count(report)
+        if pages <= MAX_PDF_PAGES:
+            break
+    report["layout"] = {"level": layout.level, "pdf_pages": pages, "max_pages": MAX_PDF_PAGES, "fits": pages <= MAX_PDF_PAGES}
+    return report
 
 
 def _cell(value: Any) -> str:
@@ -545,17 +622,25 @@ def _register_korean_font() -> str:
 def _column_weights(columns: list[str]) -> list[float]:
     weights = {
         "기술": 1.0, "항목": 1.3, "판정": 1.3, "판정 이유": 2.6, "성립 조건": 2.0, "근거": 1.4,
+        "번호": 0.6, "출처": 0.6, "위치·유형": 1.6, "인용 구절": 5.0,
         "비교 축": 1.0, "KIVI (SW)": 2.5, "InfiniGen (HW)": 2.5,
         "지표": 1.2, "값": 1.0, "비교 기준": 1.2, "측정 조건": 2.4, "출처 위치": 1.2,
     }
     return [weights.get(column, 1.5) for column in columns]
 
 
-def _write_pdf(path: Path, report: dict[str, Any], meta: str) -> str:
+def pdf_page_count(report: dict[str, Any]) -> int:
+    """Pages the report takes as a PDF (rendered in memory)."""
+    return _write_pdf(io.BytesIO(), report, "")[1]
+
+
+def _write_pdf(target: Path | io.BytesIO, report: dict[str, Any], meta: str) -> tuple[str, int]:
+    """Render the PDF to a path or buffer. Returns ``(font name, page count)``."""
     font = _register_korean_font()
     base = getSampleStyleSheet()["BodyText"]
     body = ParagraphStyle("KoreanBody", parent=base, fontName=font, fontSize=9.5, leading=15, wordWrap="CJK", spaceAfter=6)
     cell = ParagraphStyle("KoreanCell", parent=body, fontSize=7.5, leading=10, spaceAfter=0)
+    small = ParagraphStyle("KoreanSmall", parent=body, fontSize=7.5, leading=10.5, spaceAfter=3)
     heading1 = ParagraphStyle("KoreanH1", parent=body, fontSize=14, leading=20, spaceBefore=14, spaceAfter=8)
     heading2 = ParagraphStyle("KoreanH2", parent=body, fontSize=11.5, leading=16, spaceBefore=10, spaceAfter=6)
     title_style = ParagraphStyle("KoreanTitle", parent=heading1, fontSize=17, leading=24, alignment=TA_CENTER, spaceAfter=4)
@@ -564,8 +649,9 @@ def _write_pdf(path: Path, report: dict[str, Any], meta: str) -> str:
     width = A4[0] - 90
     for section in report["sections"]:
         story.append(Paragraph(escape(section["heading"]), heading1 if section.get("level", 1) == 1 else heading2))
+        style = small if section["heading"] in SMALL_SECTIONS else body
         for paragraph in section.get("paragraphs", []):
-            story.append(Paragraph(escape(str(paragraph)).replace("\n", "<br/>"), body))
+            story.append(Paragraph(escape(str(paragraph)).replace("\n", "<br/>"), style))
         table = section.get("table")
         if table and table.get("rows"):
             weights = _column_weights(table["columns"])
@@ -589,8 +675,11 @@ def _write_pdf(path: Path, report: dict[str, Any], meta: str) -> str:
             story.append(grid)
             story.append(Spacer(1, 6))
         story.append(Spacer(1, 4))
-    SimpleDocTemplate(str(path), pagesize=A4, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=45, title=report["title"]).build(story)
-    return font
+    document = SimpleDocTemplate(
+        target if isinstance(target, io.BytesIO) else str(target), pagesize=A4, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=45, title=report["title"]
+    )
+    document.build(story)
+    return font, document.page
 
 
 def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str = "report") -> dict[str, str]:
@@ -602,6 +691,7 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
     synthesis = state.get("synthesis") or {}
     check = state.get("evidence_check") or {}
     pdf_font: str | None = None
+    pdf_pages: int | None = None
     meta = (
         f"모드 {config['mode']} · 생성 방식 {(report or {}).get('generation_mode', '-')} · 기준일 {config.get('as_of') or '미지정'} · "
         f"실행 시각 {str(state.get('started_at', ''))[:19]}"
@@ -618,7 +708,7 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
         )
         artifacts["html"] = str(html_path)
         pdf_path = output_dir / f"{report_name}.pdf"
-        pdf_font = _write_pdf(pdf_path, report, meta)
+        pdf_font, pdf_pages = _write_pdf(pdf_path, report, meta)
         artifacts["pdf"] = str(pdf_path)
     source_path = output_dir / "sources.json"
     source_path.write_text(json.dumps(_redact(state.get("sources", {})), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -659,6 +749,8 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
         "conflicts": collect_conflicts(state),
         "metrics": aggregate_metrics(state.get("metrics")),
         "pdf_font": pdf_font,
+        "pdf_pages": pdf_pages,
+        "layout": (report or {}).get("layout"),
         "artifacts": dict(artifacts),
     }
     manifest_path.write_text(json.dumps(_redact(manifest), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
