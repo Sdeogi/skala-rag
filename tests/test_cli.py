@@ -17,6 +17,8 @@ def test_documented_direct_cli_runs_without_pythonpath(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert (tmp_path / "report.pdf").stat().st_size > 1000
     assert "합성 fixture" in (tmp_path / "report.md").read_text(encoding="utf-8")
+    run_id = next(line.split(": ", 1)[1] for line in completed.stdout.splitlines() if line.startswith("run_id: "))
+    assert len(run_id) == 32
 
 
 def test_cli_defaults_to_integration_services_and_checks_llm_key(tmp_path):

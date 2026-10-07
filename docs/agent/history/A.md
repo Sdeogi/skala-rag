@@ -80,3 +80,27 @@
 - `_call_service`의 허용 키 검사와 `validate_update` 호출을 지우지 않는다. 하위 에이전트가 제어 필드를 덮어쓰는 것을 막는 유일한 장치다.
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 82 passed; `app.py --mode replay --fixture --output-dir outputs/demo` 정상(Supervisor 결정 6회, manifest `complete`)
+
+## 2026-10-07 15:10 · sup/graph · San Kim
+
+**무엇을**: 실행 기반(run_id·체크포인터·LangSmith 메타데이터·fixture 재작업 대응·도식 재생성)과 그에 대한 테스트 추가
+
+**왜**: 중단 후 재개와 트레이스 추적이 안 됐다. run_id 하나로 State, manifest, LangSmith 트레이스를 찾을 수 있어야 하고, fixture 서비스가 새 입력(네 키 페이로드와 `rework_requests`)으로도 재작업 흐름을 흉내 내야 전체 루프를 키 없이 검증할 수 있다.
+
+**바꾼 파일**:
+- `app.py` — `main`: `build_graph(..., checkpointer=InMemorySaver())`; `graph.stream` config에 `run_name`, `tags`(`skala-rag`, 모드, fixture), `metadata.run_id`, `configurable.thread_id=run_id` 추가; 실행 시작 때 `run_id:` 출력. `--checkpoint-db`·`--resume`는 SQLite 체크포인터 의존성이 없어 보류(필요하면 D에게 `langgraph-checkpoint-sqlite` 추가 요청).
+- `src/skala_rag/graph/demo.py` — `_perspective`: 페이로드의 `rework_requests`와 `{name}_analysis`를 읽어 재작업이면 이전 판정을 유지하고 요청 항목만 다시 만든다. metrics에 `rework_items`, `known_evidence` 추가.
+- `docs/graph.mmd` — `app.py --draw-graph`로 재생성(Supervisor 허브).
+- `tests/test_graph.py` — 체크포인터로 `technical` 뒤에서 멈췄다가 같은 `thread_id`로 재개하면 결정이 이어지고 결정마다 체크포인트가 남는지, fixture 서비스가 재작업 항목만 다시 내는지 추가.
+- `tests/test_cli.py` — fixture 실행 출력에 32자 `run_id`가 있는지 추가.
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음. manifest에 넣을 제어 필드(`run_id`, `step_count`, `agent_status`, `decision_log`, `quality_result`, `quality_attempts`)는 State에 모두 있으며 D가 `save_outputs`에서 읽으면 된다.
+
+**충돌 시 지켜야 할 것**:
+- `app.py`의 stream config에서 `configurable.thread_id`를 지우면 체크포인터가 있는 그래프가 실행되지 않는다(LangGraph가 thread_id를 요구한다).
+- `demo.py`의 `_perspective`가 `state["evidence"]`를 읽도록 되돌리면 안 된다. 페이로드에는 `known_evidence_ids`만 있다.
+- `docs/graph.mmd`는 손으로 합치지 말고 `app.py --draw-graph docs/graph.mmd`로 다시 만든다.
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 84 passed; `app.py --mode replay --fixture --output-dir outputs/demo` 정상

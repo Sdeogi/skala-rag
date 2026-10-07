@@ -442,3 +442,39 @@ def test_metrics_events_are_aggregated_in_manifest(tmp_path):
     assert metrics["totals"]["web_search_calls"] == 9  # initial call + two reworks
     assert metrics["by_node"]["supervisor"]["decisions"] == 8
     assert metrics["totals"]["elapsed_seconds"] >= 0
+
+
+# ── checkpoints and fixture services ──
+
+
+def test_checkpointer_persists_every_supervisor_decision_and_resumes(tmp_path):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    saver = InMemorySaver()
+    graph = build_graph(make_services(missing=True), output_dir=tmp_path, checkpointer=saver)
+    state = initial_state(mode="replay")
+    config = {**CONFIG, "configurable": {"thread_id": state["run_id"]}}
+    first = graph.invoke(state, config=config, interrupt_after=["technical"])
+    assert decisions(first) == ["technical"] and first["technical_findings"] and "market_analysis" not in first
+    assert graph.get_state(config).values["step_count"] == 1
+    resumed = graph.invoke(None, config=config)
+    assert decisions(resumed) == ["technical", "run:market,stakeholder,domain,trl", "rework:market", "rework:market", "synthesis", "report", "quality", "save"]
+    assert resumed["run_id"] == state["run_id"] and resumed["artifacts"]["manifest"]
+    steps = [snapshot.values.get("step_count") for snapshot in graph.get_state_history(config) if snapshot.values.get("step_count") is not None]
+    assert max(steps) == 8 and len(set(steps)) == 9  # one checkpoint per decision plus the initial state
+
+
+def test_fixture_services_reemit_only_the_requested_items_on_rework():
+    from skala_rag.graph.demo import create_services
+
+    services = create_services()
+    state = initial_state(mode="replay")
+    first = services.market({"run_config": state["run_config"], "market_analysis": None, "rework_requests": [], "known_evidence_ids": []})
+    judgments = first["market_analysis"]["technologies"]
+    assert set(judgments) == set(TECHS) and first["metrics"]["rework_items"] == 0
+    judgments["KIVI"]["adoption"]["label"] = "미확인"
+    request = {"perspective": "market", "technology": "KIVI", "field": "adoption", "reasons": ["not_found_label"], "question": "?", "attempt": 1}
+    second = services.market({"run_config": state["run_config"], "market_analysis": first["market_analysis"], "rework_requests": [request], "known_evidence_ids": ["sample-KIVI"]})
+    assert second["market_analysis"]["technologies"]["KIVI"]["adoption"]["label"] == "연구 재현 수준"
+    assert second["market_analysis"]["technologies"]["InfiniGen"] == judgments["InfiniGen"]
+    assert second["metrics"] == {"web_search_calls": 2, "retrieve_calls": 0, "rework_items": 1, "known_evidence": 1}
