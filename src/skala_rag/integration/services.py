@@ -12,8 +12,12 @@ modules untouched:
   ``technologies{tech: {field: Judgment}}``; A's chunks and B's web tools are
   adapted to the ``Evidence`` objects C's judges expect.
 
-Repair rounds (``state["retry_mode"]``) re-run only the technologies/items named
-in ``state["missing_questions"]`` and merge into the previous perspective result.
+Rework rounds (``state["rework_requests"]`` non-empty for a perspective) re-run only
+the technologies/items named in those requests and merge into the previous result.
+Each request carries ``perspective``, ``technology``, ``field``, ``reasons``,
+``review_reason``, ``question`` and an ``attempt`` counter. A legacy
+``retry_mode`` + ``missing_questions`` + ``retry_count`` shape is accepted during
+the Supervisor transition and converted internally.
 
 Usage: ``python app.py --mode live`` (default factory) or
 ``--services skala_rag.integration.services:create_services``.
@@ -178,22 +182,54 @@ def _model_id(state: Mapping[str, Any], settings: IntegrationSettings) -> str:
     return settings.model_id or str(_config(state).get("model_id") or "gpt-5.4-mini")
 
 
-def _missing(state: Mapping[str, Any], perspective: str) -> list[dict[str, Any]]:
-    return [q for q in (state.get("missing_questions") or []) if q.get("perspective") == perspective]
+def _rework_requests(state: Mapping[str, Any], perspective: str) -> list[dict[str, Any]]:
+    """Normalized rework instructions for one perspective.
+
+    Reads ``state["rework_requests"]`` (list of dicts with ``perspective``, ``technology``,
+    ``field``, ``reasons``, ``review_reason``, ``question``, ``attempt``). While the
+    Supervisor still emits the legacy keys (``retry_mode`` + ``missing_questions`` +
+    ``retry_count``), those are mapped to the new shape so services keep working during
+    the transition. Remove the legacy branch once the Supervisor rewrite lands.
+    """
+    requests = state.get("rework_requests")
+    if requests is not None:
+        return [dict(r) for r in requests if r and r.get("perspective") == perspective]
+    if not state.get("retry_mode"):
+        return []
+    attempt = int(state.get("retry_count", 1) or 1)
+    return [{**q, "attempt": attempt} for q in (state.get("missing_questions") or []) if q.get("perspective") == perspective]
+
+
+def _is_rework(state: Mapping[str, Any], perspective: str) -> bool:
+    return bool(_rework_requests(state, perspective))
+
+
+def _rework_attempt(state: Mapping[str, Any], perspective: str, tech: str | None = None) -> int:
+    requests = _rework_requests(state, perspective)
+    if tech is not None:
+        requests = [r for r in requests if r.get("technology") == tech]
+    return max((int(r.get("attempt", 1) or 1) for r in requests), default=0)
+
+
+def _known_evidence_ids(state: Mapping[str, Any]) -> set[str]:
+    ids = state.get("known_evidence_ids")
+    if ids is not None:
+        return {str(identifier) for identifier in ids}
+    return {str(identifier) for identifier in (state.get("evidence") or {}).keys()}
 
 
 def _retry_technologies(state: Mapping[str, Any], perspective: str, technologies: list[str]) -> list[str]:
-    """Technologies to (re)run: all on a normal call, only the failing ones in a repair round."""
-    if not state.get("retry_mode"):
+    """Technologies to (re)run: all on a normal call, only the ones named in rework_requests otherwise."""
+    if not _is_rework(state, perspective):
         return technologies
-    wanted = sorted({str(q["technology"]) for q in _missing(state, perspective)})
+    wanted = sorted({str(r["technology"]) for r in _rework_requests(state, perspective)})
     return [tech for tech in technologies if tech in wanted] or technologies
 
 
 def _retry_items(state: Mapping[str, Any], perspective: str) -> set[tuple[str, str]] | None:
-    if not state.get("retry_mode"):
+    if not _is_rework(state, perspective):
         return None
-    return {(str(q["technology"]), str(q["field"])) for q in _missing(state, perspective)}
+    return {(str(r["technology"]), str(r["field"])) for r in _rework_requests(state, perspective)}
 
 
 def _dump(value: Any) -> Any:
@@ -225,8 +261,20 @@ def _tech_enum(tech: str) -> Any:
         raise ValueError(f"C 브랜치 평가기는 KIVI/InfiniGen만 지원한다: {tech}") from exc
 
 
-def _round_key(state: Mapping[str, Any], key: str) -> str:
-    return f"{key}-r{int(state.get('retry_count', 0) or 0)}" if state.get("retry_mode") else key
+def _round_key(state: Mapping[str, Any], key: str, perspective: str | None = None, tech: str | None = None) -> str:
+    """Suffix an error/record key with the rework attempt so repeat rounds don't overwrite earlier records.
+
+    ``perspective`` is required to look up the attempt from ``rework_requests``. The legacy
+    ``retry_count`` fallback keeps working while workflow still sets it.
+    """
+    if perspective is None:
+        if state.get("retry_mode"):
+            return f"{key}-r{int(state.get('retry_count', 0) or 0)}"
+        return key
+    if not _is_rework(state, perspective):
+        return key
+    attempt = _rework_attempt(state, perspective, tech)
+    return f"{key}-r{attempt}" if attempt else key
 
 
 def _perspective_result(perspective: str, judgments: dict[str, dict[str, dict[str, Any]]], technologies: list[str]) -> dict[str, Any]:
@@ -271,7 +319,7 @@ class _EvidenceCollector:
     def __init__(self, state: Mapping[str, Any], branches: _Branches):
         self.state = state
         self.branches = branches
-        self.existing = dict(state.get("evidence") or {})
+        self.existing = _known_evidence_ids(state)
         self.evidence: dict[str, dict[str, Any]] = {}
         self.sources: dict[str, dict[str, Any]] = {}
         self.errors: list[dict[str, Any]] = []
@@ -400,7 +448,7 @@ class _EvidenceCollector:
         for index, ((stage, error_type), items) in enumerate(grouped.items()):
             topics = ", ".join(dict.fromkeys(str(item.get("topic")) for item in items))
             detail = str(items[0].get("reason", ""))[:160]
-            records[_round_key(state, f"{node}-web-{index}")] = {
+            records[_round_key(state, f"{node}-web-{index}", node)] = {
                 "node": node,
                 "reason": f"{stage} {error_type} ×{len(items)} ({topics}): {detail}",
                 "fatal": False,
@@ -532,14 +580,15 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
 
     def service(state: Mapping[str, Any]) -> dict[str, Any]:
         technologies = _technologies(state)
-        previous = (state.get(f"{name}_analysis") or {}).get("technologies") if state.get("retry_mode") else None
+        is_rework = _is_rework(state, name)
+        previous = (state.get(f"{name}_analysis") or {}).get("technologies") if is_rework else None
         judgments: dict[str, dict[str, dict[str, Any]]] = {tech: dict((previous or {}).get(tech) or {}) for tech in technologies}
         evidence: dict[str, Any] = {}
         sources: dict[str, Any] = {}
         errors: dict[str, Any] = {}
         metrics: dict[str, Any] = {}
         targets = _retry_technologies(state, name, technologies)
-        if state.get("retry_mode") and previous:
+        if is_rework and previous:
             # B's agents search fixed query templates, not the missing questions, so repeating a
             # successful collection would repeat the same searches (and API budget) for the same
             # outcome. Only technologies whose collection itself failed are collected again.
@@ -557,7 +606,7 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
             try:
                 result = runner(technologies=(tech,), mode=_mode(state), **_cache_kw(settings.cache_dir), **kwargs)
             except Exception as exc:
-                errors[_round_key(state, f"{name}-{tech}-collect")] = {
+                errors[_round_key(state, f"{name}-{tech}-collect", name, tech)] = {
                     "node": name,
                     "reason": f"{type(exc).__name__}: {exc}"[:500],
                     "fatal": False,
@@ -575,7 +624,7 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
             evidence.update(result.get("evidence") or {})
             sources.update(result.get("sources") or {})
             for key, value in (result.get("errors") or {}).items():
-                errors[_round_key(state, key)] = value
+                errors[_round_key(state, key, name, tech)] = value
             for key, value in (result.get("metrics") or {}).items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     metrics[key] = metrics.get(key, 0) + value
@@ -597,7 +646,7 @@ def make_domain(settings: IntegrationSettings, branches: _Branches):
 
         technologies = _technologies(state)
         wanted = _retry_items(state, "domain")
-        previous = (state.get("domain_analysis") or {}).get("technologies") if state.get("retry_mode") else None
+        previous = (state.get("domain_analysis") or {}).get("technologies") if _is_rework(state, "domain") else None
         judgments: dict[str, dict[str, dict[str, Any]]] = {tech: dict((previous or {}).get(tech) or {}) for tech in technologies}
         collector = _EvidenceCollector(state, branches)
         model = _model_id(state, settings)
@@ -627,13 +676,14 @@ def make_trl(settings: IntegrationSettings, branches: _Branches):
         from skala_rag.prompts.trl import TRL_STAGES
 
         technologies = _technologies(state)
+        is_rework = _is_rework(state, "trl")
         targets = _retry_technologies(state, "trl", technologies)
-        previous = (state.get("trl_analysis") or {}).get("technologies") if state.get("retry_mode") else None
+        previous = (state.get("trl_analysis") or {}).get("technologies") if is_rework else None
         judgments: dict[str, dict[str, dict[str, Any]]] = {tech: dict((previous or {}).get(tech) or {}) for tech in technologies}
         collector = _EvidenceCollector(state, branches)
         model = _model_id(state, settings)
         # Repair rounds re-judge with the web pages cached by the first round instead of searching again.
-        mode = "replay" if state.get("retry_mode") else _mode(state)
+        mode = "replay" if is_rework else _mode(state)
         llm_calls = 0
         for tech in targets:
             stage_results: list[tuple[Any, Any]] = []
