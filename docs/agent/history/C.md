@@ -137,3 +137,29 @@
 - D의 새 6장은 단일 출처 판정 수를 자동으로 밝히므로 도메인 단일 출처가 밝혀진 것으로 평가돼(`domain_disclosed=True`) 편향 통제의 도메인 감점이 사라진다
 
 **확인**: 합친 트리에서 실제 replay State로 보고서를 만들어 평가: PDF 10쪽(수준 0), 본문 인용 48개 모두 각주에 있고 각주 문제 0건, Groundedness 5, 중립성 4, 편향 통제 3(출처 1개 판정 9개, 2개 1개), 관점 커버리지 4. 이 브랜치에서 `pytest -q tests/test_quality.py` 37 passed.
+
+## 2026-10-07 14:42 · sup/quality · piso
+
+**무엇을**: 편향 통제의 통과선을 4점에서 3점으로 낮췄다. 항목별 통과선을 지원하고, 결과의 각 항목에 `threshold`를 실어 준다. 앞선 항목에서 "근거가 하나뿐이면 평균 3점이지만 통과선이 4점이라 `recollect`가 나온다"고 쓴 부분은 이 항목으로 바뀐다(근거가 하나뿐인 판정은 3점이고 통과한다).
+
+**왜**: 다루는 소재가 마이너해서 애초에 출처가 많지 않은 경우가 흔하다. 근거가 하나뿐인 판정을 미달로 보고 재수집 루프를 돌려도 같은 결과만 반복된다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/quality.py`
+  - `DEFAULT_ITEM_THRESHOLDS = {"bias": 3}`, `QualityEvaluator(..., item_thresholds=None)`, `QualityEvaluator.pass_line(item)`: 항목의 통과선. 전체 `threshold`보다 높아지지는 않는다(`threshold=3`이면 모든 항목이 3점). `passed`와 `action`은 항목별 통과선으로 판단한다
+  - `QualityItem.threshold`: 항목의 통과선을 결과의 `items[*]`에 싣는다
+  - 편향 통제의 다른 감점 상한을 3점에서 2점으로 낮췄다(`DOMAIN_UNDISCLOSED_CAP`, `MAX_SOURCE_SHARE_CAP`, `EVIDENCE_COUNT_RATIO_CAP`, `BALANCE_GAP_CAP`). 통과선이 3점이 되면 3점 상한은 감점이 아니게 되므로, 이 감점들이 계속 미달로 남게 한다
+  - 편향 통제의 재수집 요청은 출처를 더 모아야 풀리는 미달일 때만 만든다(`Rule.recollect`, `Rule.source_score`, `QualityEvaluator._rework`). 출처 수 점수가 통과선 미만이거나, 한 출처 쏠림·기술별 근거 수 편중으로 감점된 경우다. 도메인 단일 출처를 한계점에 밝히지 않은 경우는 `rewrite_report`로 6장에 문장을 추가하게 한다. 실제 State에서 이 경우에도 단일 출처 판정 9개에 재수집을 요청하던 것을 바로잡았다
+- `tests/test_quality.py` — 항목별 통과선, 통과선을 올렸을 때의 재수집, 밝힘 누락은 재작성, 한 출처 쏠림은 재수집을 확인하는 테스트 추가(41개)
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- 트랙 A·D: `quality_result["threshold"]`는 기본 통과선(4점) 그대로이고, 편향 통제의 통과선은 `quality_result["items"]["bias"]["threshold"]`(3점)이다. 미달 항목을 가릴 때(`accept_with_limits`로 6장 한계점에 적을 항목 포함)는 최상위 `threshold`가 아니라 `score < items[이름]["threshold"]`로 판단해야 한다. 최상위 값으로 비교하면 통과한 편향 통제(3점)가 미달로 적힌다
+- `QualityResult`의 `items[*]`에 필드가 하나 늘었다. 트랙 A의 모델은 추가 필드를 허용한다
+
+**충돌 시 지켜야 할 것**:
+- `DEFAULT_ITEM_THRESHOLDS`를 지우거나 편향 통제의 감점 상한을 3점으로 되돌리지 않는다. 통과선이 3점인 상태에서 상한이 3점이면 도메인 단일 출처 미공개·한 출처 쏠림·근거 수 편중이 통과해 버린다
+- `_rework`의 편향 통제 조건을 없애지 않는다. 없애면 한계점 문장 하나가 빠진 경우에도 재수집을 돌려 같은 결과만 반복한다
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 110 passed, `pytest -q` 134 passed, `app.py --mode replay --fixture` 정상. 항목별 통과선을 지우는 변이는 테스트가 잡는다. 실제 replay State(현재 `supervisor` 기준 보고서): 편향 통제 2점(도메인 단일 출처를 한계점에 밝히지 않아서), `rewrite_report`, 재수집 요청 0건. 6장에 도메인 단일 출처를 밝히면 Groundedness 5, 중립성 5, 편향 통제 3(통과), 관점 커버리지 4로 `pass`다.

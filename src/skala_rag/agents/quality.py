@@ -30,6 +30,8 @@ from .synthesis import CAUTIOUS, FAVORABLE
 
 ITEMS = ("groundedness", "neutrality", "bias", "coverage")
 DEFAULT_THRESHOLD = 4
+# 항목별 통과선. 편향 통제는 소재가 마이너해 출처가 많지 않은 경우가 흔해서 3점이면 통과로 본다(근거가 하나뿐인 판정의 점수가 3점이다).
+DEFAULT_ITEM_THRESHOLDS = {"bias": 3}
 DEFAULT_MAX_JUDGE_CALLS = 6
 
 # ── 점수 구간 (초기값) ───────────────────────────────────────────────────────
@@ -38,6 +40,7 @@ DEFAULT_MAX_JUDGE_CALLS = 6
 GROUNDEDNESS_BANDS = ((0.95, 5), (0.85, 4), (0.70, 3), (0.50, 2))  # 인용이 달린 서술 문장의 비율
 # 판정 하나의 점수는 인용한 서로 다른 출처의 수로 정하고(1개 3점, 2개 4점, 3개 이상 5점) 항목 점수는 그 평균이다.
 # 출처가 하나뿐인 판정이 많아도 점수가 급락하지 않고 평균 3점에 머문다. 평균이 3.5 이상이면 4점이다.
+# 편향 통제의 다른 감점(아래 *_CAP)은 통과선(3점) 아래인 2점으로 제한해 계속 미달로 남게 한다.
 SOURCE_COUNT_SCORES = {1: 3, 2: 4}  # 3개 이상은 5점
 COVERAGE_BANDS = ((0.80, 5), (0.65, 4), (0.50, 3), (0.35, 2))  # 24개 항목 중 근거가 확인된 판정의 비율
 # 약한 비교 표현의 개수 → 점수. 첫 replay 보고서에서 논문이 보고한 baseline 비교('…더 나은 정확도를 보인다고 보고한다')와
@@ -46,11 +49,11 @@ WEAK_COMPARATIVE_BANDS = ((5, 2), (3, 3), (0, 4))  # (하한 개수, 점수): 5�
 STRONG_COMPARATIVE_SCORE = 2  # 강한 비교 표현이 하나라도 있을 때
 UNMARKED_FAILURE_CAP = 3  # 근거 검사에 실패한 판정이 통과한 것처럼 서술됐을 때 Groundedness 상한
 FOOTNOTE_MISMATCH_CAP = 2  # 각주의 기술·인용 구절·출처가 State의 근거와 어긋날 때 Groundedness 상한
-DOMAIN_UNDISCLOSED_CAP = 3  # 도메인 판정의 단일 출처 의존을 한계점에 밝히지 않았을 때 편향 통제 상한
-MAX_SOURCE_SHARE_CAP = (0.60, 3)  # 한 출처가 인용 단위의 이 비율 넘게 차지하면 상한
-EVIDENCE_COUNT_RATIO_CAP = (0.40, 3)  # 기술별 인용 근거 수의 min/max가 이 값 미만이면 상한
+DOMAIN_UNDISCLOSED_CAP = 2  # 도메인 판정의 단일 출처 의존을 한계점에 밝히지 않았을 때 편향 통제 상한
+MAX_SOURCE_SHARE_CAP = (0.60, 2)  # 한 출처가 인용 단위의 이 비율 넘게 차지하면 상한
+EVIDENCE_COUNT_RATIO_CAP = (0.40, 2)  # 기술별 인용 근거 수의 min/max가 이 값 미만이면 상한
 EVIDENCE_COUNT_MIN = 6  # 위 비교는 더 많은 쪽 근거가 이 수 이상일 때만 한다
-BALANCE_GAP_CAP = (0.60, 3)  # 기술별 긍정 비율 차이가 이 값 이상이면 상한
+BALANCE_GAP_CAP = (0.60, 2)  # 기술별 긍정 비율 차이가 이 값 이상이면 상한
 BALANCE_MIN_JUDGMENTS = 4  # 위 비교는 두 기술 모두 긍정·신중 판정이 이 수 이상일 때만 한다
 
 MAX_INSTRUCTIONS = 10
@@ -125,6 +128,7 @@ class QualityItem(BaseModel):
     rule_score: int = Field(ge=1, le=5)
     llm_score: int | None = Field(default=None, ge=1, le=5)
     reasons: list[str] = Field(default_factory=list)
+    threshold: int | None = Field(default=None, ge=1, le=5)  # 이 항목의 통과선. 최상위 threshold와 다를 수 있다
 
 
 class QualityInstruction(BaseModel):
@@ -456,6 +460,8 @@ class Rule:
     instructions: list[dict[str, str]] = field(default_factory=list)
     targets: list[dict[str, Any]] = field(default_factory=list)  # 재수집이 필요할 때 만들 지시의 재료
     measurements: dict[str, Any] = field(default_factory=dict)
+    source_score: int | None = None  # 편향 통제: 출처 수 점수의 평균(감점 상한을 적용하기 전)
+    recollect: bool = False  # 편향 통제: 감점 원인이 출처를 더 모아야 풀리는 것(한 출처 쏠림, 근거 수 편중)인지
 
     def cap(self, limit: int) -> None:
         self.score = min(self.score, limit)
@@ -731,7 +737,7 @@ def bias_rule(parsed: Parsed, ctx: _Context) -> Rule:
         scores.append(SOURCE_COUNT_SCORES.get(count, 5 if count >= 3 else 1))
         histogram["3+" if count >= 3 else str(count)] += 1
     mean = sum(scores) / len(scores) if scores else (5.0 if passing else 1.0)
-    rule.score = max(1, min(5, int(mean + 0.5)))  # 반올림(3.5는 4점)
+    rule.score = rule.source_score = max(1, min(5, int(mean + 0.5)))  # 반올림(3.5는 4점)
     rule.measurements = {
         "passing_judgments": len(passing),
         "measured_judgments": len(scores),
@@ -795,6 +801,7 @@ def _bias_concentration(parsed: Parsed, ctx: _Context, rule: Rule, passing: list
         rule.measurements["max_source_share"] = round(share, 3)
         if share > MAX_SOURCE_SHARE_CAP[0]:
             rule.cap(MAX_SOURCE_SHARE_CAP[1])
+            rule.recollect = True
             rule.reasons.append(f"출처 '{top}'이 인용 단위의 {share:.0%}를 차지함")
             rule.instructions.append(_instruction("bias", "6. 한계점", f"출처 '{top}'에 인용이 쏠림({share:.0%})", "", "다른 출처의 근거를 더하거나 쏠림을 한계점에 밝힘"))
     counts = {name: 0 for name in ctx.technologies}
@@ -808,6 +815,7 @@ def _bias_concentration(parsed: Parsed, ctx: _Context, rule: Rule, passing: list
         rule.measurements["evidence_count_ratio"] = round(ratio, 3)
         if ratio < EVIDENCE_COUNT_RATIO_CAP[0]:
             rule.cap(EVIDENCE_COUNT_RATIO_CAP[1])
+            rule.recollect = True
             rule.reasons.append("기술별 인용 근거 수 차이가 큼: " + ", ".join(f"{name} {count}개" for name, count in counts.items()))
             rule.instructions.append(_instruction("bias", "6. 한계점", "두 기술의 인용 근거 수가 크게 다름", "", "근거가 적은 기술의 자료를 더 찾거나 근거 수 차이를 한계점에 밝힘"))
     stance: dict[str, dict[str, int]] = {name: {"favorable": 0, "cautious": 0} for name in ctx.technologies}
@@ -916,11 +924,23 @@ class QualityEvaluator:
     ``judge_model``이 ``None``이면 규칙 검사만 한다. State를 읽기만 하며 ``quality_attempts``나 상한은 다루지 않는다.
     """
 
-    def __init__(self, judge_model: Any | None = None, *, threshold: int = DEFAULT_THRESHOLD, max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS):
+    def __init__(
+        self,
+        judge_model: Any | None = None,
+        *,
+        threshold: int = DEFAULT_THRESHOLD,
+        max_judge_calls: int = DEFAULT_MAX_JUDGE_CALLS,
+        item_thresholds: Mapping[str, int] | None = None,
+    ):
         self.judge_model = judge_model
         self.threshold = threshold
         self.max_judge_calls = max_judge_calls
+        self.item_thresholds = {**DEFAULT_ITEM_THRESHOLDS, **(item_thresholds or {})}
         self.last_measurements: dict[str, Any] = {}
+
+    def pass_line(self, item: str) -> int:
+        """항목의 통과선. 항목별 값이 있어도 전체 ``threshold``보다 높아지지는 않는다."""
+        return min(self.threshold, self.item_thresholds.get(item, self.threshold))
 
     def __call__(self, state: Mapping[str, Any]) -> dict[str, Any]:
         ctx = _Context(state)
@@ -943,9 +963,9 @@ class QualityEvaluator:
             llm_score = outcome.score if outcome else None
             score = rule.score if llm_score is None else min(rule.score, llm_score)
             reasons = list(rule.reasons) + (outcome.reasons if outcome else [])
-            items[name] = QualityItem(score=score, rule_score=rule.score, llm_score=llm_score, reasons=reasons)
+            items[name] = QualityItem(score=score, rule_score=rule.score, llm_score=llm_score, reasons=reasons, threshold=self.pass_line(name))
             ordered[name] = rule.instructions + (outcome.issues if outcome else [])
-        failing = [name for name in ITEMS if items[name].score < self.threshold]
+        failing = [name for name in ITEMS if items[name].score < self.pass_line(name)]
         self.last_measurements = {name: rules[name].measurements for name in ITEMS}
         events.append(metric_event("quality", purpose="evaluate", evaluations=1, measurements=json.dumps(self.last_measurements, ensure_ascii=False, default=str)))
         if not failing:
@@ -963,7 +983,7 @@ class QualityEvaluator:
         return {"quality_result": result.model_dump(), "metrics": events}
 
     def _empty_result(self, events: list[dict[str, Any]]) -> dict[str, Any]:
-        items = {name: QualityItem(score=1, rule_score=1, reasons=["평가할 보고서가 없음"]) for name in ITEMS}
+        items = {name: QualityItem(score=1, rule_score=1, reasons=["평가할 보고서가 없음"], threshold=self.pass_line(name)) for name in ITEMS}
         instruction = QualityInstruction(item="groundedness", section="", problem="보고서가 비어 있음", fix="보고서를 생성")
         result = QualityResult(passed=False, threshold=self.threshold, items=items, action="rewrite_report", instructions=[instruction])
         return {"quality_result": result.model_dump(), "metrics": events}
@@ -973,7 +993,11 @@ class QualityEvaluator:
         for name in ("coverage", "bias"):  # 커버리지 쪽 사유(근거 검사 결과)를 먼저 둔다
             if name not in failing:
                 continue
-            for target in rules[name].targets:
+            rule = rules[name]
+            # 편향 통제는 출처가 모자라서 미달일 때만 재수집한다. 도메인 단일 출처를 한계점에 밝히지 않은 것 같은 감점은 재작성으로 푼다.
+            if name == "bias" and not (rule.recollect or (rule.source_score or 5) < self.pass_line("bias")):
+                continue
+            for target in rule.targets:
                 key = (target["perspective"], target["technology"], target["field"])
                 if key in requests:
                     continue

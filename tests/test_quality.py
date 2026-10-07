@@ -238,11 +238,47 @@ def test_failed_check_shown_as_confirmed_caps_groundedness():
 
 
 # ── 편향 통제 ──
-def test_judgments_with_a_single_source_score_three_on_average_not_one():
+def test_judgments_with_a_single_source_score_three_and_pass_the_bias_line():
     result, _, evaluator = evaluate(make_state(single_source=True))
-    assert result["items"]["bias"]["score"] == 3 and result["action"] == "recollect"  # 통과선(4점)에는 못 미치므로 재수집 대상
+    bias = result["items"]["bias"]
+    assert bias["score"] == 3 and bias["threshold"] == 3 and result["passed"] and result["action"] == "pass"
     assert evaluator.last_measurements["bias"]["mean_source_score"] == 3.0
-    assert any("평균 3.0점" in reason for reason in result["items"]["bias"]["reasons"])
+    assert any("평균 3.0점" in reason for reason in bias["reasons"])
+    assert result["rework_requests"] == [] and result["threshold"] == 4  # 다른 항목의 통과선은 그대로 4점
+
+
+def test_a_missing_disclosure_is_a_rewrite_even_when_judgments_have_single_sources():
+    result, _, _ = evaluate(make_state(single_source=True, domain_disclosed=False))
+    assert result["items"]["bias"]["score"] == 2 and not result["passed"]
+    assert result["action"] == "rewrite_report" and result["rework_requests"] == []  # 출처를 더 모아도 풀리지 않는 미달이다
+    assert any("한계점에 밝히지 않음" in item["problem"] for item in result["instructions"])
+
+
+def test_one_dominant_source_is_recollected_when_single_source_judgments_exist(monkeypatch):
+    import skala_rag.agents.quality as quality
+
+    monkeypatch.setattr(quality, "MAX_SOURCE_SHARE_CAP", (0.3, 2))
+    result, _, evaluator = evaluate(make_state(single_source=True))
+    assert evaluator.last_measurements["bias"]["max_source_share"] > 0.3
+    assert result["items"]["bias"]["score"] == 2 and result["action"] == "recollect"
+    assert result["rework_requests"] and all(item["perspective"] != "domain" for item in result["rework_requests"])
+
+
+def test_each_item_reports_its_own_pass_line():
+    result, _, _ = evaluate(make_state())
+    assert {name: item["threshold"] for name, item in result["items"].items()} == {"groundedness": 4, "neutrality": 4, "bias": 3, "coverage": 4}
+    QualityResult.model_validate(result)
+
+
+def test_the_bias_line_can_be_raised_and_then_single_source_judgments_are_recollected():
+    state = make_state(single_source=True)
+    result, _, evaluator = evaluate(state, item_thresholds={"bias": 4})
+    assert evaluator.pass_line("bias") == 4 and not result["passed"] and result["action"] == "recollect"
+    requests = result["rework_requests"]
+    assert requests and all(item["reasons"] == ["missing_evidence"] and item["perspective"] != "domain" for item in requests)
+    assert all(item["review_reason"] == "단일 출처 의존: 다른 출처의 근거 필요" and item["attempt"] == 0 for item in requests)
+    lowered, _, low = evaluate(state, threshold=3)  # 전체 통과선을 낮춰도 항목별 값이 더 높아지지는 않는다
+    assert low.pass_line("bias") == 3 and low.pass_line("coverage") == 3 and lowered["passed"]
     requests = result["rework_requests"]
     assert requests and all(item["reasons"] == ["missing_evidence"] for item in requests)
     assert all(item["review_reason"] == "단일 출처 의존: 다른 출처의 근거 필요" and item["attempt"] == 0 for item in requests)
@@ -252,7 +288,7 @@ def test_judgments_with_a_single_source_score_three_on_average_not_one():
 
 def test_domain_single_source_must_be_disclosed_in_limitations():
     undisclosed, _, _ = evaluate(make_state(domain_disclosed=False))
-    assert undisclosed["items"]["bias"]["score"] == 3 and undisclosed["action"] == "rewrite_report"
+    assert undisclosed["items"]["bias"]["score"] == 2 and not undisclosed["passed"] and undisclosed["action"] == "rewrite_report"  # 통과선(3점) 아래로 제한
     assert any(item["section"] == "6. 한계점" for item in undisclosed["instructions"])
     assert undisclosed["rework_requests"] == []
     disclosed, _, _ = evaluate(make_state(domain_disclosed=True))
@@ -266,7 +302,7 @@ def test_one_sided_evidence_counts_are_flagged():
         add_paragraph(state, "5.", f"KIVI는 항목 {number}에서 보고됐다 [KIVI-x{number}].")
     result, _, evaluator = evaluate(state)
     assert evaluator.last_measurements["bias"]["evidence_count_ratio"] < 0.4
-    assert result["items"]["bias"]["score"] <= 3
+    assert result["items"]["bias"]["score"] == 2 and not result["passed"]  # 통과선(3점) 아래로 제한
 
 
 # ── 관점 커버리지 ──
