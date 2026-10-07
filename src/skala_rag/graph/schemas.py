@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from skala_rag.config import DEFAULT_MODEL_ID
+from skala_rag.config import DEFAULT_FETCH_MAX, DEFAULT_MODEL_ID, DEFAULT_WEB_SEARCH_MAX
 
 Mode = Literal["live", "replay"]
 ClaimType = Literal["reported_fact", "inference", "unverified"]
@@ -109,8 +109,8 @@ class SearchBudget(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    web_search_max: int = 20
-    fetch_max: int = 30
+    web_search_max: int = DEFAULT_WEB_SEARCH_MAX
+    fetch_max: int = DEFAULT_FETCH_MAX
     tool_timeout_seconds: int = 20
     tool_retries: int = 2
 

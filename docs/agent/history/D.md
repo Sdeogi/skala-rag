@@ -339,3 +339,118 @@
 - `_rework_requests`에 예전 형식 분기를 되살리지 않는다. 그래프는 `rework_requests`만 보낸다
 
 **확인**: pytest 171 passed(이전 4 failed), `app.py --mode replay --fixture` 정상
+
+## 2026-10-07 17:05 · sup/live-fixes · deogi
+
+**무엇을**: 실제 자료(live) 실행 네 번에서 드러난 문제를 고침. 웹 근거 요약 호출 방식, 웹 예산, 품질 루프 경로, 평가기의 오인식, 보고서 3장 작성과 수식 표기가 대상이다.
+
+**왜** (실행에서 확인한 현상 → 원인):
+- 시장성·이해관계자·TRL의 웹 근거가 하나도 모이지 않음 → 웹 요약만 함수 도구 방식(`create_agent` + `ToolStrategy`)을 썼는데 `gpt-5.6-luna`가 chat completions에서 이를 거부("Function tools with reasoning_effort are not supported")
+- 검색 예산이 첫 수집에서 바닥남 → 기본 20회인데 첫 수집에만 약 40회 필요. 원문 조회도 60건으로는 이해관계자 수집이 45회 실패
+- 품질 루프가 0회로 끝남 → 평가가 재수집을 제안했는데 모든 관점의 재작업 횟수가 소진돼 있으면 곧바로 한계 수용으로 감. 고쳐 쓸 수 있는 지적이 있어도 재작성을 시도하지 않음
+- Groundedness 규칙 점수 1점 → 논문 표기 `[l-r:]`를 "없는 근거 인용"으로 읽음. 부록 인용 칸의 "발언 주체 …: " 접두가 원문 대조에 걸림
+- Groundedness Judge 점수가 재작성 뒤 더 낮아짐 → 재작성이 검증에 걸리면 이전 LLM 글을 버리고 규칙 기반 문장으로 돌아갔고, 판정 라벨 나열과 "…을 검증해야 한다" 같은 제언 문장이 사실 주장으로 채점됨. 작성 LLM이 각 번호의 내용을 모른 채 인용 번호를 붙임
+- 3장이 원문 주장을 세미콜론으로 이어 붙인 한 덩어리이고 LaTeX(`\\(\\tilde{Q}=…\\)`)가 그대로 찍힘
+
+**바꾼 파일**:
+- `src/skala_rag/tools/web.py` — `_call_summary_model`: 에이전트 + 함수 도구 대신 `with_structured_output(WebEvidenceSummary)`. 프로젝트의 다른 LLM 호출과 같은 방식
+- `src/skala_rag/config.py`, `tools/budget.py`, `graph/schemas.py`, `app.py` — 웹 예산 기본값을 `config.DEFAULT_WEB_SEARCH_MAX = 100`, `DEFAULT_FETCH_MAX = 150` 한 곳에 둠(이전 20/30)
+- `src/skala_rag/graph/workflow.py` — 품질 평가가 재수집을 제안했지만 재수집할 관점이 없고 지적된 문장(`instructions`)이 있으면 `rewrite_report`로 내려감(품질 루프 상한 안에서). 미달 항목 표시가 항목별 통과 기준(`item["threshold"]`)을 따름
+- `src/skala_rag/agents/quality.py` — `UNKNOWN_ID_SHAPE` 추가: State에 없는 대괄호 토큰은 근거 ID 모양일 때만 "없는 근거"로 셈(`[l-r:]`, `[i:j]`, `[n]` 제외). `META_PATTERN`에 "확인해야/검증해야/확인이 필요" 등 추가(제언 문장은 사실 주장이 아님). 3장은 보고서가 LLM 작성으로 표시했을 때만 Judge 점수에 포함(`_Context.scored_chapters`)
+- `src/skala_rag/agents/report.py`
+  - `_technical_section(state, layout, overview)`: 기술당 세 문단(원리 / 실험 조건과 성능 / 한계), 세미콜론 대신 문장, 문단마다 그 범주의 근거만 인용. `overview`(LLM 문단)가 있으면 그것을 씀
+  - `clean_math`: LaTeX 표기 제거
+  - `_evidence_table`: 인용 구절 칸에는 구절만, 발언 주체는 위치 칸으로
+  - `_synthesis_paragraphs`: 쌍이 없으면 "상충 쌍 0개" 대신 쌍이 구성되지 않았다는 문장
+  - `_compose`·`build_report`에 `overview` 인자
+- `src/skala_rag/agents/llm_output.py`
+  - `ReportDraft.overview`(`TechOverview`): 작성 LLM이 3장을 기술마다 2문단으로 다시 씀. 기술별로 검증(인용 번호, 새 숫자, 우열 표현, 수식 표기, 길이)하고 실패한 기술만 규칙 문단 유지
+  - `report["llm_texts"]["overview"]`에 3장 원문(근거 ID 인용)을 보관해 이후 재작성에서 지적받지 않으면 그대로 재사용. `llm_sections`에 `overview` 추가
+  - 재작성이 검증에 걸리면 이전 LLM 글을 유지(그 뒤 지적 문장은 삭제 규칙이 처리)
+  - 작성 LLM 입력에 `evidence`(번호별 claim·quote) 추가, 프롬프트에 "번호는 그 사실을 직접 담은 근거만", "판정 라벨은 판정임을 드러내기", "제언·미확인 문장에는 번호를 붙이지 않기" 추가
+  - 부록·REFERENCE를 가리키는 지시는 문장 고쳐 쓰기 대상에서 제외
+- `src/skala_rag/integration/services.py` — 기술 조사 결과에 `evidence_by_category`(원리/실험 조건/성능/한계별 근거 ID) 추가
+- `src/skala_rag/agents/technical/prompts.py` — 수식을 LaTeX로 쓰지 말라는 규칙 추가
+- 테스트: `tests/test_output.py`, `test_llm_output.py`, `test_quality.py`, `test_graph.py`, `test_schemas.py`
+
+**남의 파일**: 최종 정리 단계라 여러 트랙 파일을 함께 고쳤다(위 목록의 `tools/`, `graph/`, `integration/`, `agents/quality.py`, `agents/technical/`).
+
+**인터페이스 영향**:
+- `technical_findings[기술]["evidence_by_category"]` 추가. `report["llm_sections"]`에 `overview` 키, `report["llm_texts"]` 추가
+- 웹 예산 기본값이 바뀜(검색 100, 조회 150)
+- 품질 평가의 재수집 제안이 재작성으로 바뀔 수 있음(결정 기록의 사유에 표시)
+
+**충돌 시 지켜야 할 것**:
+- 웹 요약을 함수 도구 방식으로 되돌리지 않는다. 추론 모델이 chat completions에서 거부한다
+- `DEFAULT_FETCH_MAX`를 60 이하로 내리지 않는다. 실행 기록의 `fetch_calls`는 TRL 관점만 세므로 실제 사용량보다 작게 보인다
+- 재작성 실패 시 이전 LLM 글을 유지하는 부분(`kept.get(...)`)을 `None`으로 되돌리면 규칙 기반 요약이 Judge에게 낮은 점수를 받는다
+- `UNKNOWN_ID_SHAPE`를 없애면 논문 표기의 대괄호가 Groundedness를 1점으로 만든다
+
+**확인**: pytest 204 passed. live 4회: 근거 검사 통과 9 → 11 → 13 → 17/24, 커버리지 2 → 4, 편향 통제 2 → 3(통과선 3), 중립성 5 유지, Groundedness 규칙 점수 1 → 5·Judge 점수 2, PDF 9쪽, 오류 89 → 2건
+
+## 2026-10-07 17:11 · sup/live-fixes · deogi
+
+**무엇을**: 제출 전 정리. README를 Supervisor 구조로 다시 쓰고, 쓰지 않는 코드와 의존성을 제거
+
+**왜**: README가 예전 구조(고정 병렬 파이프라인)를 설명하고 있었고 State 스키마 설계와 품질 평가 기준이 없었다. README의 설치 명령(최소 환경)대로 하면 논문 검색 패키지가 없어 `pytest`가 수집 단계에서 멈췄다. 의존성 목록에 이 프로젝트가 import하지 않는 패키지가 20여 개 있었고, 그중 `psycopg2`는 PostgreSQL이 없는 컴퓨터에서 설치가 실패한다.
+
+**바꾼 파일**:
+- `README.md` — 전면 재작성: 패턴 선택 이유와 trade-off, Agents 표, Architecture(새 그래프 도식과 Supervisor의 판단 순서), State Schema(제어/페이로드 구분과 7개 설계 항목), Quality Evaluation(4개 항목의 규칙 검사·LLM Judge·통과 기준·미달 시 처리), Directory Structure, Usage, Contributors
+- `pyproject.toml` — `dependencies`를 실제 import하는 패키지 15개로 축소(이전 36개). `graph` 의존성 그룹 삭제(전체 설치가 가벼워져 최소 환경이 따로 필요 없음). `description` 작성
+- `uv.lock` — 다시 생성(약 3,700줄 감소)
+- `src/skala_rag/evidence_check.py`, `src/skala_rag/supplement.py` — 삭제. 어디서도 import하지 않는 이전 과제의 근거 검사·보완 구현이다(현재는 `graph/evidence_check.py`와 Supervisor의 재작업이 그 역할)
+- `.env.template` — LangSmith 변수를 `LANGSMITH_*` 이름으로, 글꼴 설명 갱신
+- `docs/graph.mmd` — 다시 생성
+
+**남의 파일**: 삭제한 두 파일은 이전 과제에서 다른 담당이 만든 것이다. `grep`으로 import가 없음을 확인하고 삭제했다.
+
+**인터페이스 영향**:
+- 설치 명령이 `uv sync --group dev` 하나로 바뀜(`--only-group graph`는 더 이상 없음)
+- 삭제된 패키지를 쓰는 코드는 없다. `HANDOFF.md`와 `docs/PAPER_RAG_HANDOFF.md`, `docs/GRAPH_OUTPUT_*.md`는 이전 과제의 기록이며 삭제된 두 파일을 언급한다
+
+**충돌 시 지켜야 할 것**:
+- `pyproject.toml`에 패키지를 다시 넣을 때는 실제로 import하는 것만 넣는다. `psycopg2`, `jupyter`, `ragas` 등은 이 저장소 코드가 쓰지 않는다
+- `uv.lock` 충돌은 손으로 풀지 말고 `uv lock`으로 다시 만든다
+
+**확인**: 별도의 깨끗한 환경에 `uv sync --group dev`로 설치(패키지 약 200개) → `pytest -q` 204 passed, `app.py --mode replay --fixture` 정상
+
+## 2026-10-07 17:14 · sup/live-fixes · deogi
+
+**무엇을**: 이전 과제(RAG)의 인수인계·설계·검토 문서 다섯 개 삭제
+
+**왜**: 고정 병렬 파이프라인 시절의 구조와 지금은 없는 파일(`evidence_check.py`, `supplement.py`)을 설명하고 있어 현재 코드와 맞지 않는다. 같은 문서가 이전 과제 브랜치(`rag`)에 그대로 남아 있어 비교가 필요하면 거기서 볼 수 있다.
+
+**바꾼 파일**:
+- 삭제: `HANDOFF.md`, `docs/GRAPH_OUTPUT_DESIGN.md`, `docs/GRAPH_OUTPUT_HISTORY.md`, `docs/GRAPH_OUTPUT_REVIEW.md`, `docs/PAPER_RAG_HANDOFF.md`
+- `src/skala_rag/tools/retrieve/parsing.py`, `src/skala_rag/schemas/__init__.py`, `src/skala_rag/schemas/state.py` — 삭제한 문서를 가리키던 docstring 문구 수정(코드 변경 없음)
+
+**남의 파일**: 삭제한 문서와 docstring은 이전 과제에서 다른 담당이 쓴 것이다.
+
+**인터페이스 영향**: 없음
+
+**충돌 시 지켜야 할 것**: 이 문서들을 되살리지 않는다. 내용이 필요하면 `rag` 브랜치를 본다.
+
+**확인**: 다섯 파일 모두 `origin/rag`에 있음을 확인한 뒤 삭제. 코드·README·설정에 남은 참조 없음
+
+## 2026-10-07 17:24 · sup/live-fixes · deogi
+
+**무엇을**: 품질 평가 Judge가 보는 근거 범위를 넓히고, Judge 기준 두 가지를 명확히 함
+
+**왜**: 다섯 번째 실제 실행에서 Groundedness Judge가 "인용 구절에 A100, 4배 배치 같은 수치가 없다"고 지적했는데, Judge는 근거 구절의 앞 300자만 받고 있었다(논문 청크는 1,200자까지, 작성 LLM은 400자). 수치가 구절 뒤쪽에 있으면 실제로는 근거가 있어도 "없음"으로 판정된다. 같은 실행에서 중립성 Judge는 두 기술의 TRL 단계가 다르게 나온 것(TRL 4와 TRL 3)을 "순위화"로 보고 1점을 줬다. 판정 결과를 전하는 것은 보고서의 목적이지 우열 판정이 아니다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/quality.py`
+  - `JUDGE_QUOTE_LIMIT = 800` 추가, Groundedness Judge에 넘기는 근거 구절을 300자 → 800자로. `EVIDENCE_PER_UNIT` 4 → 5
+  - `JUDGE_GROUNDEDNESS_PROMPT`: 근거를 찾지 못했다는 진술과 "…로 판정됐다" 문장은 구절이 그 말을 담지 않아도 문제로 보지 않음
+  - `JUDGE_NEUTRALITY_PROMPT`: 판정 라벨·TRL 단계를 그대로 전하는 것은 값이 달라도 우열이 아님. 비교 우위를 말하거나 한쪽을 권할 때만 우열
+- `src/skala_rag/agents/llm_output.py` — 작성 LLM에 주는 근거 구절도 800자로 맞춤(작성자와 평가자가 같은 범위를 봄)
+
+**남의 파일**: `agents/quality.py`(품질 평가 담당)
+
+**인터페이스 영향**: 없음. Judge 호출의 입력 토큰이 늘어난다
+
+**충돌 시 지켜야 할 것**:
+- 작성 LLM과 Judge가 보는 근거 구절 길이를 다르게 두지 않는다. 한쪽만 짧으면 작성자가 근거에서 가져온 수치를 평가자가 못 본다
+- 중립성 Judge 프롬프트에서 "판정 결과 전달은 우열이 아님" 문장을 빼면 두 기술의 TRL이 다를 때마다 중립성이 1점이 된다
+
+**확인**: pytest 175 passed(논문 검색 테스트 제외). 실제 실행으로는 아직 확인하지 않음

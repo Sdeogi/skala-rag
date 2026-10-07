@@ -15,6 +15,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
+from skala_rag.config import DEFAULT_FETCH_MAX, DEFAULT_WEB_SEARCH_MAX
+
 
 class BudgetExhausted(RuntimeError):
     """Raised when the per-run web search / fetch cap has been reached.
@@ -30,8 +32,8 @@ class BudgetExhausted(RuntimeError):
 class WebBudget:
     """Thread-safe counters for web_search / fetch calls within one run."""
 
-    search_max: int = 20
-    fetch_max: int = 30
+    search_max: int = DEFAULT_WEB_SEARCH_MAX
+    fetch_max: int = DEFAULT_FETCH_MAX
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     search_used: int = 0
     fetch_used: int = 0

@@ -72,16 +72,16 @@ def test_llm_insights_replace_chapter_five_and_fall_back_independently_of_the_su
     insights = ["KIVI는 도입 발표와 운영 우려가 엇갈리며 대규모 배포 조건에서만 확인됐다 [1].", "적용 전에 운영 부담을 다시 확인해야 한다 [1]."]
     good = LLMReportAgent(FakeModel({"summary": summary, "insights": insights}))(state)
     chapter = next(section for section in good["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
-    assert chapter[1:] == shown_all(insights) and chapter[0].startswith("관점 간 상충 쌍")
-    assert good["generation_mode"] == "llm_assisted" and good["llm_sections"] == {"summary": True, "insights": True}
+    assert chapter[1:] == shown_all(insights) and chapter[0].startswith("근거가 확인된 판정이 적어 관점 간 상충·일치 쌍은 구성되지 않았다.")
+    assert good["generation_mode"] == "llm_assisted" and good["llm_sections"] == {"summary": True, "insights": True, "overview": False}
 
     ranked = LLMReportAgent(FakeModel({"summary": summary, "insights": ["KIVI가 더 우수하다 [1].", "둘째 문단 [1]."]}))(state)
-    assert ranked["generation_mode"] == "llm_assisted" and ranked["llm_sections"] == {"summary": True, "insights": False}
+    assert ranked["generation_mode"] == "llm_assisted" and ranked["llm_sections"] == {"summary": True, "insights": False, "overview": False}
     assert "ranking" in ranked["insights_fallback_reason"] and "더 우수" not in ranked["markdown"]
     assert ranked["markdown"].startswith("# SUMMARY\n\nKIVI의 도입 발표와")
 
     partial = LLMReportAgent(FakeModel({"summary": "KIVI는 2029년에 입증되었다 [1].", "insights": insights}))(state)
-    assert partial["generation_mode"] == "llm_partial" and partial["llm_sections"] == {"summary": False, "insights": True}
+    assert partial["generation_mode"] == "llm_partial" and partial["llm_sections"] == {"summary": False, "insights": True, "overview": False}
     assert "2029" not in partial["markdown"] and shown(insights[0]) in partial["markdown"]
 
     long = LLMReportAgent(FakeModel({"summary": summary, "insights": [insights[0]] * 2 + ["KIVI " + "가" * 1700 + " [1]."]}))(state)
@@ -119,7 +119,7 @@ def reviewed_state(action, instructions):
     state = sample_state()
     state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
     state["report"] = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1}))(state)
-    assert state["report"]["llm_sections"] == {"summary": True, "insights": True}
+    assert state["report"]["llm_sections"] == {"summary": True, "insights": True, "overview": False}
     state["quality_result"] = {"passed": False, "threshold": 4, "items": {"neutrality": {"score": 2, "reasons": ["비교 우위 표현"]}}, "action": action, "instructions": instructions, "rework_requests": []}
     return state
 
@@ -146,7 +146,7 @@ def test_llm_rewrites_only_the_instructed_section_and_keeps_the_other_llm_text()
     assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]  # not instructed: the previous LLM text stays
     assert chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2) and "유리하다" not in report["markdown"]
     assert report["revision"]["number"] == 1 and report["revision"]["applied"][0]["result"] == "rewritten"
-    assert report["llm_sections"] == {"summary": True, "insights": True} and report["generation_mode"] == "llm_assisted"
+    assert report["llm_sections"] == {"summary": True, "insights": True, "overview": False} and report["generation_mode"] == "llm_assisted"
 
 
 class SchemaModel(FakeModel):
@@ -212,14 +212,6 @@ def test_whole_section_rewrite_and_sentence_fix_are_combined_in_one_revision():
     assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]
 
 
-def test_rewrite_that_repeats_the_flagged_sentence_falls_back_to_the_rule_based_chapter():
-    instruction = {"item": "neutrality", "section": "5. 시사점", "quote": "KIVI는 도입 발표가 있어 다른 선택지보다 유리하다", "fix": "삭제"}
-    state = reviewed_state("rewrite_report", [instruction])
-    report = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1}))(state)
-    assert "repeats a sentence flagged" in report["insights_fallback_reason"] and "유리하다" not in report["markdown"]
-    assert report["llm_sections"] == {"summary": True, "insights": False} and chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]
-
-
 def test_accept_with_limits_keeps_llm_texts_without_calling_the_model():
     state = reviewed_state("accept_with_limits", [])
     model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
@@ -234,3 +226,52 @@ def test_recollect_regenerates_both_llm_sections_with_the_instructions():
     model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
     report = LLMReportAgent(model)(state)
     assert model.calls == 1 and chapter(report, "SUMMARY") == [shown("KIVI 요약을 새로 썼다 [1].")] and chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2)
+
+
+OVERVIEW_GOOD = {"technology": "KIVI", "paragraphs": ["KIVI는 KV 캐시를 2비트로 압축해 같은 메모리에 더 많은 문맥을 담는다 [1].", "KIVI는 공개 발표 기준으로 서비스 도입이 보고됐지만 대규모 배포의 운영 부담은 확인이 필요하다 [1]."]}
+
+
+def overview_state():
+    state = sample_state()
+    state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
+    state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 압축한다", "limitations": ["긴 문맥은 검증되지 않았다"], "evidence_ids": ["e1"]}}
+    return state
+
+
+def test_llm_rewrites_the_technical_overview_and_keeps_it_through_a_later_revision():
+    state = overview_state()
+    first = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1, "overview": [OVERVIEW_GOOD]}))(state)
+    assert chapter(first, "3. 기술 개요") == OVERVIEW_GOOD["paragraphs"]
+    assert first["llm_sections"]["overview"] is True and first["llm_texts"]["overview"]["KIVI"][0].endswith("[e1].")
+    # a later revision that points at chapter 5 only leaves chapter 3 as the LLM wrote it
+    state["report"] = first
+    state["quality_result"] = {"passed": False, "threshold": 4, "items": {}, "action": "rewrite_report", "rework_requests": [], "instructions": [
+        {"item": "neutrality", "section": "5. 시사점", "quote": "KIVI는 도입 발표가 있어 다른 선택지보다 유리하다", "fix": "삭제"}]}
+    second = LLMReportAgent(FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2, "overview": [{"technology": "KIVI", "paragraphs": ["KIVI를 다르게 썼다 [1]."]}]}))(state)
+    assert chapter(second, "3. 기술 개요") == OVERVIEW_GOOD["paragraphs"] and chapter(second, "5. 시사점")[1:] == INSIGHTS_V2
+    assert second["llm_sections"] == {"summary": True, "insights": True, "overview": True}
+
+
+def test_rejected_technical_overview_falls_back_to_the_rule_based_paragraphs():
+    for paragraphs, reason in (
+        (["KIVI가 더 우수하다 [1]."], "ranking"),
+        ([r"KIVI는 \\(Q=XW\\)로 계산한다 [1]."], "formula"),
+        (["KIVI는 2029년에 검증됐다 [1]."], "number"),
+        (["KIVI 설명에 인용이 없다."], "citations"),
+        (["압축 기법이다 [1]."], "mention"),
+    ):
+        report = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1, "overview": [{"technology": "KIVI", "paragraphs": paragraphs}]}))(overview_state())
+        assert reason in report["overview_fallback_reason"], (paragraphs, report["overview_fallback_reason"])
+        assert chapter(report, "3. 기술 개요")[0].startswith("KIVI의 핵심 원리: KV를 2비트로 압축한다") and report["llm_sections"]["overview"] is False
+        assert report["generation_mode"] == "llm_assisted"  # the summary and chapter 5 are still used
+
+
+def test_rejected_rewrite_keeps_the_previous_llm_text_and_removes_only_the_flagged_sentence():
+    flagged = "KIVI는 도입 발표가 있어 다른 선택지보다 유리하다"
+    state = reviewed_state("rewrite_report", [{"item": "neutrality", "section": "5. 시사점", "quote": flagged, "fix": "삭제"}])
+    # the rewrite repeats the flagged sentence, so it is rejected
+    report = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1}))(state)
+    kept = chapter(report, "5. 시사점")[1:]
+    assert kept == [INSIGHTS_V1[1]]  # the previous LLM chapter stays, minus the flagged sentence
+    assert "repeats a sentence flagged" in report["insights_fallback_reason"] and report["llm_sections"]["insights"] is True
+    assert report["revision"]["applied"][0]["result"] == "removed" and flagged not in report["markdown"]

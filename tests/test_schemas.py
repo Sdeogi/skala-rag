@@ -48,7 +48,7 @@ def test_run_config_requires_two_distinct_technologies_and_domain():
     with pytest.raises(ValueError, match="domain"):
         RunConfig(mode="replay", technologies=["KIVI", "InfiniGen"], domain=" ")
     config = RunConfig(mode="live", technologies=["KIVI", "InfiniGen"], domain="클라우드 LLM 서빙")
-    assert config.budget.web_search_max == 20 and config.max_paper_pages == 200
+    assert config.budget.web_search_max == 100 and config.budget.fetch_max == 150 and config.max_paper_pages == 200
 
 
 def test_supervisor_constants_and_agent_names():

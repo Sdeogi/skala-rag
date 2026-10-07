@@ -10,6 +10,13 @@ MODEL_ENV_VAR = "RAG_MODEL_ID"  # the one environment variable every LLM caller 
 DEFAULT_MODEL_ID = "gpt-5.6-luna"  # the one place the default model name is written
 
 
+# Per-run web budget, sized from live runs. The first collection takes about 40 searches (market,
+# stakeholder, TRL) and two rework rounds about as many again: 78-80 were used. Page fetches ran out at 60
+# (the stakeholder agent alone needs dozens), and 120 was enough, so 150 leaves room.
+DEFAULT_WEB_SEARCH_MAX = 100
+DEFAULT_FETCH_MAX = 150
+
+
 def resolve_model_id(explicit: str | None = None, env: Mapping[str, str] | None = None) -> str:
     """Model to call: an explicit argument, else ``RAG_MODEL_ID``, else ``DEFAULT_MODEL_ID``."""
     source = os.environ if env is None else env

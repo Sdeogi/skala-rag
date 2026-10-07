@@ -491,10 +491,29 @@ def deterministic_summary(state: GraphState) -> list[str]:
     return [text]
 
 
-def _technical_section(state: GraphState, layout: Layout = LAYOUTS[0]) -> tuple[list[str], dict[str, Any] | None]:
+LATEX_WRAPPED = re.compile(r"\\[A-Za-z]+\{([^{}]*)\}")  # \tilde{Q} -> Q
+LATEX_COMMAND = re.compile(r"\\(?:[A-Za-z]+|[()\[\]])")  # \( \) \alpha
+
+
+def clean_math(text: Any) -> str:
+    """Drop LaTeX markup that would be printed literally (``\\(\\tilde{Q}=X_a W_Q A\\)`` -> ``Q=X_a W_Q A``)."""
+    value = str(text or "")
+    if "\\" not in value:
+        return value
+    previous = None
+    while previous != value:  # nested commands
+        previous = value
+        value = LATEX_WRAPPED.sub(r"\1", value)
+    return re.sub(r" {2,}", " ", LATEX_COMMAND.sub("", value))
+
+
+def _technical_section(
+    state: GraphState, layout: Layout = LAYOUTS[0], overview: dict[str, list[str]] | None = None
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Chapter 3. ``overview`` (LLM-written paragraphs per technology, citing raw evidence IDs) replaces the rule-based text."""
     evidence = state.get("evidence") or {}
     findings_all = state.get("technical_findings") or {}
-    known = {"principle", "experiment_conditions", "performance", "measurements", "limitations", "evidence_ids"}
+    known = {"principle", "experiment_conditions", "performance", "measurements", "limitations", "evidence_ids", "evidence_by_category"}
     paragraphs: list[str] = []
     rows: list[list[str]] = []
     for technology in state["run_config"]["technologies"]:
@@ -502,31 +521,42 @@ def _technical_section(state: GraphState, layout: Layout = LAYOUTS[0]) -> tuple[
         if not findings:
             paragraphs.append(f"{technology}: 기술 조사 결과 미확인")
             continue
-        cite = _citations(list(findings.get("evidence_ids") or []), evidence)
-
-        def listed(key: str) -> str:
-            return "; ".join(str(item).strip().rstrip(".") for item in (findings.get(key) or [])[: layout.list_items] if str(item).strip())
-
-        # One paragraph per technology: principle -> experiment conditions -> reported performance -> limitations.
-        parts: list[str] = []
-        if findings.get("principle"):
-            parts.append(f"{technology}의 핵심 원리: " + _clip_sentences(findings["principle"], 150 * layout.list_items).rstrip("."))
-        # Labels keep the wording other tests and readers already rely on ("KIVI의 성능 보고: ...").
-        for key, label in (("experiment_conditions", "실험 조건"), ("performance", "성능 보고"), ("limitations", "한계")):
-            if listed(key):
-                parts.append(f"{technology}의 {label}: {listed(key)}")
-        extras = []
-        for key, value in findings.items():
-            if key in known or value in (None, "", [], {}):
-                continue
-            rendered = value if isinstance(value, (str, int, float)) else json.dumps(value, ensure_ascii=False, default=str)
-            extras.append(f"{key}: {_clip(rendered, 300)}")
-        if extras:
-            parts.append(f"{technology}의 추가 조사 항목: " + "; ".join(extras))
-        if parts:
-            paragraphs.append(". ".join(parts) + (f" {cite}" if cite else "") + ".")
+        if overview and overview.get(technology):
+            paragraphs.extend(overview[technology])
         else:
-            paragraphs.append(f"{technology}: 구조화된 기술 조사 결과 있음(세부 항목 미기재)")
+            by_category = findings.get("evidence_by_category") or {}
+
+            def sentence(key: str, label: str) -> str:
+                """``KIVI의 성능 보고: a. b [ids].`` with the evidence of that category."""
+                if key == "principle":
+                    items = [_clip_sentences(clean_math(findings.get(key) or ""), 150 * layout.list_items)]
+                else:
+                    items = [clean_math(item) for item in (findings.get(key) or [])[: layout.list_items]]
+                items = [str(item).strip().rstrip(".") for item in items if str(item).strip()]
+                if not items:
+                    return ""
+                cite = _citations(list(by_category.get(key) or []), evidence)
+                return f"{technology}의 {label}: " + ". ".join(items) + (f" {cite}" if cite else "") + "."
+
+            # Three short paragraphs per technology: principle / experiments and reported performance / limitations.
+            blocks = [
+                sentence("principle", "핵심 원리"),
+                " ".join(part for part in (sentence("experiment_conditions", "실험 조건"), sentence("performance", "성능 보고")) if part),
+                sentence("limitations", "한계"),
+            ]
+            extras = []
+            for key, value in findings.items():
+                if key in known or value in (None, "", [], {}):
+                    continue
+                rendered = value if isinstance(value, (str, int, float)) else json.dumps(value, ensure_ascii=False, default=str)
+                extras.append(f"{key}: {_clip(rendered, 300)}")
+            if extras:
+                blocks.append(f"{technology}의 추가 조사 항목: " + "; ".join(extras) + ".")
+            blocks = [block for block in blocks if block]
+            if blocks and not by_category:  # findings without per-category evidence: cite the whole set once
+                cite = _citations(list(findings.get("evidence_ids") or []), evidence)
+                blocks[-1] = blocks[-1].rstrip(".") + (f" {cite}" if cite else "") + "."
+            paragraphs.extend(blocks or [f"{technology}: 구조화된 기술 조사 결과 있음(세부 항목 미기재)"])
         for measurement in findings.get("measurements") or []:
             if not isinstance(measurement, dict):
                 continue
@@ -675,9 +705,12 @@ def _synthesis_paragraphs(state: GraphState, synthesis: dict[str, Any], evidence
     technologies = list(state["run_config"]["technologies"])
     conflicts = synthesis.get("conflicts") or []
     agreements = synthesis.get("agreements") or []
-    lines = [
-        f"관점 간 상충 쌍 {len(conflicts)}개, 일치 쌍 {len(agreements)}개를 확인했다. 총점이나 순위 대신 판정이 엇갈리는 지점과 각 판정이 성립하는 조건을 제시한다."
-    ]
+    if conflicts or agreements:
+        lead = f"관점 간 상충 쌍 {len(conflicts)}개, 일치 쌍 {len(agreements)}개를 확인했다. 총점이나 순위 대신 판정이 엇갈리는 지점과 각 판정이 성립하는 조건을 제시한다."
+    else:
+        # No pair can be formed when few judgments passed the evidence check; say so instead of "0 pairs".
+        lead = "근거가 확인된 판정이 적어 관점 간 상충·일치 쌍은 구성되지 않았다. 총점이나 순위 대신 확인된 근거 범위에서 판정이 엇갈리는 지점과 성립 조건을 제시한다."
+    lines = [lead]
     if insights:
         return lines + list(insights)
     shown_conflicts = _round_robin(conflicts, technologies, layout.conflicts)
@@ -815,15 +848,16 @@ def _evidence_table(
         source_record = (sources or {}).get(item.get("source_id")) or {}
         source_name = _clip(source_record.get("author_or_org") or _site_name(source_record.get("url")), 24)
         quote = _clip(item.get("quote") or item.get("claim") or "인용 구절 미기재", layout.quote) if layout.quote else ""
+        # The quote cell holds the quote only (it is compared with the evidence); the speaker goes with the location.
+        place = f"{item.get('location') or '위치 미기재'} / {item.get('claim_type', '유형 미기재')}"
         if item.get("speaker"):
-            speaker = f"발언 주체 {item['speaker']}" + (f"({item['stated_at']})" if item.get("stated_at") else "")
-            quote = f"{speaker}: {quote}" if quote else speaker
+            place += f" / 발언 주체 {item['speaker']}" + (f"({item['stated_at']})" if item.get("stated_at") else "")
         rows.append(
             [
                 f"[{number}]",
                 str(item.get("technology") or "기술 미상"),
                 (f"[{source}]" + (f" {source_name}" if source_name else "")) if source else "미등록",
-                f"{item.get('location') or '위치 미기재'} / {item.get('claim_type', '유형 미기재')}",
+                place,
                 quote,
             ]
         )
@@ -861,6 +895,7 @@ def _compose(
     insights: list[str] | None = None,
     handled: frozenset[str] = frozenset(),
     replacements: dict[int, str] | None = None,
+    overview: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """One report build under a given length budget."""
     config = state["run_config"]
@@ -875,7 +910,7 @@ def _compose(
     sections.append(_section("1. 분석 배경", background_paragraphs(config)))
     selection_text, selection_table = selection_paragraphs(config)
     sections.append(_section("2. 기술 선정", selection_text, selection_table))
-    technical_text, technical_table = _technical_section(state, layout)
+    technical_text, technical_table = _technical_section(state, layout, overview)
     sections.append(_section("3. 기술 개요", technical_text, technical_table))
     sections.append(
         _section(
@@ -938,13 +973,15 @@ def build_report(
     insights: list[str] | None = None,
     handled: frozenset[str] = frozenset(),
     replacements: dict[int, str] | None = None,
+    overview: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Build the report within the page limit.
 
     ``summary`` replaces the rule-based SUMMARY and ``insights`` the rule-based
     body of chapter 5; both cite raw evidence IDs. ``handled`` names sections
     the caller already rewrote for the quality instructions and ``replacements``
-    maps an instruction's position to its rewritten sentence. The
+    maps an instruction's position to its rewritten sentence. ``overview`` holds
+    LLM-written paragraphs of chapter 3 per technology. The
     report is laid out with the roomiest budget first and rebuilt with tighter
     ones while the rendered PDF exceeds ``MAX_PDF_PAGES``. ``report["layout"]``
     records the level used, the page count and whether it fits.
@@ -952,7 +989,7 @@ def build_report(
     report: dict[str, Any] = {}
     pages = 0
     for layout in LAYOUTS:
-        report = _compose(state, summary, layout, insights, handled, replacements)
+        report = _compose(state, summary, layout, insights, handled, replacements, overview)
         pages = pdf_page_count(report)
         if pages <= MAX_PDF_PAGES:
             break

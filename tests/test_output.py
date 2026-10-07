@@ -221,8 +221,20 @@ def test_technical_overview_is_one_paragraph_per_technology():
     state = base_state()
     state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 양자화한다.", "experiment_conditions": ["Llama-2-7B.", "A100"], "performance": ["2.6x memory"], "limitations": ["긴 문맥 미검증"], "evidence_ids": ["e1"]}}
     section = next(section for section in build_report(state)["sections"] if section["heading"] == "3. 기술 개요")
-    assert section["paragraphs"][0] == "KIVI의 핵심 원리: KV를 2비트로 양자화한다. KIVI의 실험 조건: Llama-2-7B; A100. KIVI의 성능 보고: 2.6x memory. KIVI의 한계: 긴 문맥 미검증 [1]."
-    assert section["paragraphs"][1] == "InfiniGen: 기술 조사 결과 미확인"
+    assert section["paragraphs"] == [
+        "KIVI의 핵심 원리: KV를 2비트로 양자화한다.",
+        "KIVI의 실험 조건: Llama-2-7B. A100. KIVI의 성능 보고: 2.6x memory.",
+        "KIVI의 한계: 긴 문맥 미검증 [1].",  # no per-category evidence: the whole set is cited once
+        "InfiniGen: 기술 조사 결과 미확인",
+    ]
+    state["technical_findings"]["KIVI"]["evidence_by_category"] = {"principle": ["e1"], "performance": ["e1"], "limitations": []}
+    state["technical_findings"]["KIVI"]["principle"] = r"쿼리를 \(\tilde{Q}=X_a W_Q\)로 바꾼다."
+    section = next(section for section in build_report(state)["sections"] if section["heading"] == "3. 기술 개요")
+    assert section["paragraphs"][:3] == [
+        "KIVI의 핵심 원리: 쿼리를 Q=X_a W_Q로 바꾼다 [1].",  # LaTeX markup is dropped; each block cites its own evidence
+        "KIVI의 실험 조건: Llama-2-7B. A100. KIVI의 성능 보고: 2.6x memory [1].",
+        "KIVI의 한계: 긴 문맥 미검증.",
+    ]
 
 
 def test_limitations_report_evidence_check_coverage_and_single_source_dependence():
@@ -340,12 +352,12 @@ def test_removed_sentence_takes_its_citation_out_of_the_appendix():
     state = revisable_state()
     first = build_report(state)
     assert set(first["citation_map"].values()) == {"e1", "e2"}
-    quote = sections_by_heading(first)["3. 기술 개요"]["paragraphs"][0]  # quoted with citation numbers, as the evaluator sees it
+    quote = next(p for p in sections_by_heading(first)["3. 기술 개요"]["paragraphs"] if "[" in p)  # quoted with citation numbers, as the evaluator sees it
     state["report"] = first
     state["quality_result"] = quality("rewrite_report", [{"item": "groundedness", "section": "3. 기술 개요", "problem": "근거 불일치", "quote": quote, "fix": "삭제"}], groundedness=2)
     second = build_report(state)
     assert set(second["citation_map"].values()) == {"e1"} and second["used_source_ids"] == ["s1"]
-    assert sections_by_heading(second)["3. 기술 개요"]["paragraphs"][0] != quote
+    assert quote not in sections_by_heading(second)["3. 기술 개요"]["paragraphs"]
     assert "second" not in second["markdown"]
 
 
