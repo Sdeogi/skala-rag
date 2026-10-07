@@ -38,6 +38,8 @@ from typing import Any
 from skala_rag.graph.schemas import LABELS, UNKNOWN_LABELS
 from skala_rag.graph.workflow import PipelineServices
 from skala_rag.integration.rework import build_rework_queries, needs_research
+from skala_rag.tools.budget import BudgetExhausted, WebBudget
+from skala_rag.tools.web import install_web_budget
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,70 @@ def _merge_search_log(prior: dict[str, dict[str, list[str]]], new: dict[str, dic
     return merged
 
 
+def _rebuild_and_install_budget(settings: IntegrationSettings, state: Mapping[str, Any]) -> None:
+    """Reset the shared web budget from ``run_config["budget"]`` and install it.
+
+    Called from ``prepare`` so one WebBudget serves the whole run, no matter how
+    many perspective nodes run in parallel afterwards.
+    """
+    if settings.budget is None:
+        return
+    config_budget = _config(state).get("budget") or {}
+    settings.budget.reset(
+        search_max=config_budget.get("web_search_max", settings.budget.search_max),
+        fetch_max=config_budget.get("fetch_max", settings.budget.fetch_max),
+    )
+    install_web_budget(settings.budget)
+
+
+def _ensure_budget_installed(settings: IntegrationSettings) -> None:
+    """Re-install the budget in case this service node is reached before ``prepare``
+    on the same process (parallel graph runs, tests calling a service directly)."""
+    if settings.budget is not None:
+        install_web_budget(settings.budget)
+
+
+def _combined_evidence(state_evidence: Any, collected_evidence: Any) -> dict[str, dict[str, Any]]:
+    """Merge the state's pre-existing evidence with the one just collected so
+    bias checks can look up every cited id."""
+    merged: dict[str, dict[str, Any]] = dict(state_evidence or {})
+    merged.update(collected_evidence or {})
+    return merged
+
+
+def _mark_single_source(
+    judgments: dict[str, dict[str, dict[str, Any]]],
+    evidence_dict: dict[str, dict[str, Any]],
+) -> None:
+    """If a judgment cites only one source, append '단일 출처' to its ``conditions``.
+
+    This surfaces the confirmation-bias risk (one voice, one reading) to the
+    report and to the quality evaluator, instead of relying on the collection
+    stage to always hit two independent sources.
+    """
+    marker = "단일 출처"
+    for tech_judgments in judgments.values():
+        if not isinstance(tech_judgments, dict):
+            continue
+        for judgment in tech_judgments.values():
+            if not isinstance(judgment, dict):
+                continue
+            evidence_ids = judgment.get("evidence_ids") or []
+            if not evidence_ids:
+                continue
+            source_ids: set[str] = set()
+            for identifier in evidence_ids:
+                entry = evidence_dict.get(str(identifier))
+                if entry and entry.get("source_id"):
+                    source_ids.add(str(entry["source_id"]))
+            if len(source_ids) != 1:
+                continue
+            conditions = str(judgment.get("conditions") or "").strip()
+            if marker in conditions:
+                continue
+            judgment["conditions"] = f"{conditions} / {marker}" if conditions else marker
+
+
 @dataclass
 class IntegrationSettings:
     """Tunables and injectable branch functions (``None`` = import the real module lazily)."""
@@ -93,6 +159,7 @@ class IntegrationSettings:
     fetch_per_stage: int = 2
     market_kwargs: dict[str, Any] = field(default_factory=dict)
     stakeholder_kwargs: dict[str, Any] = field(default_factory=dict)
+    budget: WebBudget | None = None  # shared across the three web-touching services
     retrieve: Callable[..., Any] | None = None  # A: retrieve_papers(query, tech_name, k=...)
     build_index: Callable[..., Any] | None = None  # A: build_index(papers_dir, index_dir)
     technical_research: Callable[..., Any] | None = None  # A: run_technical_research(tech_names, model=...)
@@ -504,6 +571,7 @@ def _load_manifest(papers_dir: Path) -> list[dict[str, Any]]:
 
 def make_prepare(settings: IntegrationSettings, branches: _Branches):
     def prepare(state: Mapping[str, Any]) -> dict[str, Any]:
+        _rebuild_and_install_budget(settings, state)
         papers_dir = Path(_config(state).get("paper_dir") or settings.papers_dir)
         papers = _load_manifest(papers_dir)
         known = {str(paper.get("tech_name")) for paper in papers}
@@ -618,6 +686,7 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
     kwargs = settings.market_kwargs if name == "market" else settings.stakeholder_kwargs
 
     def service(state: Mapping[str, Any]) -> dict[str, Any]:
+        _ensure_budget_installed(settings)
         technologies = _technologies(state)
         is_rework = _is_rework(state, name)
         previous_analysis = state.get(f"{name}_analysis") or {}
@@ -719,6 +788,7 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     metrics[key] = metrics.get(key, 0) + value
 
+        _mark_single_source(judgments, _combined_evidence(state.get("evidence"), evidence))
         perspective_result = _perspective_result(name, judgments, technologies)
         merged_log = _merge_search_log(prior_search_log, new_search_log)
         if merged_log:
@@ -739,6 +809,7 @@ def make_domain(settings: IntegrationSettings, branches: _Branches):
     def domain(state: Mapping[str, Any]) -> dict[str, Any]:
         from skala_rag.prompts.domain import DOMAIN_RUBRIC
 
+        _ensure_budget_installed(settings)
         technologies = _technologies(state)
         is_rework = _is_rework(state, "domain")
         wanted = _retry_items(state, "domain")
@@ -790,6 +861,7 @@ def make_domain(settings: IntegrationSettings, branches: _Branches):
                 item = branches.judge_domain(spec, _tech_enum(tech), all_candidates, model)
                 llm_calls += 1
                 judgments[tech][spec.item_key] = _judgment_from_item(item)
+        _mark_single_source(judgments, _combined_evidence(state.get("evidence"), collector.evidence))
         result = _perspective_result("domain", judgments, technologies)
         merged_log = _merge_search_log(prior_search_log, new_search_log)
         if merged_log:
@@ -809,6 +881,7 @@ def make_trl(settings: IntegrationSettings, branches: _Branches):
     def trl(state: Mapping[str, Any]) -> dict[str, Any]:
         from skala_rag.prompts.trl import TRL_STAGES
 
+        _ensure_budget_installed(settings)
         technologies = _technologies(state)
         is_rework = _is_rework(state, "trl")
         targets = _retry_technologies(state, "trl", technologies)
@@ -935,6 +1008,7 @@ def make_trl(settings: IntegrationSettings, branches: _Branches):
                 "missing_evidence": missing_notes,
                 "estimation_note": TRL_ESTIMATION_NOTE,
             }
+        _mark_single_source(judgments, _combined_evidence(state.get("evidence"), collector.evidence))
         trl_result = _perspective_result("trl", judgments, technologies)
         merged_log = _merge_search_log(prior_search_log, new_search_log)
         if merged_log:
@@ -953,6 +1027,12 @@ def make_trl(settings: IntegrationSettings, branches: _Branches):
 def create_services(settings: IntegrationSettings | None = None, **overrides: Any) -> PipelineServices:
     """Factory used by ``app.py``: ``--services skala_rag.integration.services:create_services``."""
     settings = settings or IntegrationSettings(**overrides)
+    if settings.budget is None:
+        # One shared budget per set of services, used by the three web-touching
+        # perspective nodes. Caps are updated from run_config["budget"] when
+        # ``prepare`` runs — see ``_rebuild_and_install_budget``.
+        settings.budget = WebBudget()
+    install_web_budget(settings.budget)
     branches = _Branches(settings)
     return PipelineServices(
         prepare=make_prepare(settings, branches),

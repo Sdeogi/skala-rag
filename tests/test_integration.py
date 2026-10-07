@@ -143,7 +143,9 @@ def test_domain_adapter_produces_graph_format_and_registers_new_chunks(papers_di
     state["evidence"] = {"KIVI-p3-1": {"source_id": "KIVI", "technology": "KIVI", "claim_type": "reported_fact"}}
     update = create_services(settings).domain(state)
     judgment = update["domain_analysis"]["technologies"]["KIVI"]["memory"]
-    assert judgment["label"] == "조건부 보고" and judgment["evidence_ids"] == ["KIVI-p3-1"] and judgment["conditions"] == "Llama-2-7B, A100"
+    assert judgment["label"] == "조건부 보고" and judgment["evidence_ids"] == ["KIVI-p3-1"]
+    # The judge stub cites one source, so '단일 출처' marker is appended to the conditions.
+    assert "Llama-2-7B, A100" in judgment["conditions"] and "단일 출처" in judgment["conditions"]
     assert update["domain_analysis"]["technologies"]["InfiniGen"]["integration"]["label"] == "낮음 보고"
     assert "KIVI-p4-1" in update["evidence"] and "KIVI-p3-1" not in update["evidence"]
     assert update["evidence"]["KIVI-p4-1"]["technology"] == "KIVI" and update["evidence"]["KIVI-p4-1"]["location"] == "p.4 Experiments"
@@ -168,7 +170,9 @@ def test_trl_adapter_builds_stage_details_and_web_evidence(papers_dir, tmp_path)
     judgment = update["trl_analysis"]["technologies"]["KIVI"]["trl"]
     assert judgment["label"] == "TRL 4" and judgment["highest_confirmed"] == "TRL 4"
     assert judgment["stages"]["TRL 5"]["met"] is False and "TRL 5 근거 없음" in judgment["stages"]["TRL 5"]["note"]
-    assert judgment["missing_evidence"] == ["[TRL 5] TRL 5 근거 없음"] and judgment["conditions"] == "[TRL 5] TRL 5 근거 없음"
+    assert judgment["missing_evidence"] == ["[TRL 5] TRL 5 근거 없음"]
+    # The web stub returns one source per stage, so bias-marker '단일 출처' is appended.
+    assert "[TRL 5] TRL 5 근거 없음" in judgment["conditions"] and "단일 출처" in judgment["conditions"]
     assert judgment["reason"].startswith("확인된 최고 단계 TRL 4:") and "다음 단계 TRL 5 미충족" in judgment["reason"]
     assert judgment["estimation_note"].startswith("공개 정보 기반 추정")
     web_ids = [identifier for identifier in update["evidence"] if identifier.startswith("web-evidence-")]

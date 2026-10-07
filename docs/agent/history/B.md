@@ -37,3 +37,19 @@
 **인터페이스 영향**: 하위 에이전트는 이제 입력으로 `rework_requests`와 `known_evidence_ids`를 우선적으로 읽는다. 옛 입력(`retry_mode`+`missing_questions`+`retry_count`)도 당분간 호환층에서 받아 변환하므로 workflow 쪽이 교체되기 전까지 양쪽 다 동작한다. 반환 형태 `{name}_analysis`에 선택적으로 `search_log: dict[tech, dict[field, list[str]]]`가 추가됐다. 반환 필드 자체는 `{name}_analysis`, `evidence`, `sources`, `errors`, `metrics`로 제한된다.
 **충돌 시 지켜야 할 것**: 호환층 분기(옛 입력 → 새 입력 변환)와 `search_log`는 다음 라운드 중복 방지에 쓰이므로 지우지 말 것. `_round_key`의 (perspective, tech) 인자는 재작업 시 attempt별 error 키 격리에 필요하다.
 **확인**: `.venv/bin/python -m pytest tests/test_integration.py -q` → 11/11, `.venv/bin/python -m pytest -q` → 89/89.
+
+## 2026-10-07 15:30 · sup/agents · tmdtjr
+
+**무엇을**: 웹 수집의 신뢰도와 비용을 통제하기 위해 노이즈 필터 보강, 단일 출처 편향 명시, 공유 웹 예산 객체를 넣었다.
+**왜**: 과거 실행에서 (1) 이름만 KIVI와 겹치는 블로그 등 무관한 사이트가 필터를 통과했고, (2) 요약기가 관련 LLM 추론 시장 자료를 기술 자체의 시장 자료로 올려 "직접 자료 있음"으로 잘못 분류됐으며, (3) 이해관계자 검색어 하나의 실패가 기술 전체 수집 실패로 번졌고, (4) 판정이 자기 논문 한 편만 인용해도 편향 고지가 없었으며, (5) 예산 20회가 강제되지 않아 34회가 나갔다.
+**바꾼 파일**:
+- `src/skala_rag/tools/budget.py` — 신규. `WebBudget`(threading.Lock + search/fetch 카운터)와 `BudgetExhausted` 예외.
+- `src/skala_rag/tools/web.py` — `install_web_budget`/`clear_web_budget`/`installed_web_budget` 훅과 live 분기 전 `_consume_search`/`_consume_fetch` 호출 추가. replay 모드는 그대로.
+- `src/skala_rag/agents/market.py` — `NOISE_DOMAINS` 블랙리스트, 모든 토픽에서 원 논문 제외, `_effective_scope` 헬퍼(scope="technology"지만 quote/claim에 기술명 없는 항목을 "related_market"으로 강등해 "직접 자료 있음" 오류 차단).
+- `src/skala_rag/agents/stakeholder.py` — `NOISE_DOMAINS`, 모든 축에서 원 논문 제외(`_is_original_paper` 추가), `_search_topic`에서 쿼리별 예외 격리(한 쿼리 실패가 전체로 번지지 않음).
+- `src/skala_rag/integration/services.py` — `IntegrationSettings.budget` 필드, 헬퍼 `_rebuild_and_install_budget`/`_ensure_budget_installed`/`_combined_evidence`/`_mark_single_source` 추가. `make_prepare`에서 run_config의 budget으로 리셋+설치, `create_services`에서 `WebBudget` 하나 생성, 각 perspective 서비스에서 `_ensure_budget_installed` + 반환 전 `_mark_single_source`로 단일 출처 판정에 "단일 출처" 마커 삽입.
+- `tests/test_integration.py` — domain·trl adapter 테스트가 단일 출처 마커 포함 여부를 체크하도록 수정(기존은 정확 일치).
+**남의 파일**: 없음. 전부 B 소유 파일.
+**인터페이스 영향**: 각 판정의 `conditions`에 상황에 따라 ` / 단일 출처` 접미사가 붙는다. `tools/web.get_search_results`/`get_source`가 live 호출에서 `BudgetExhausted`를 던질 수 있고, agent/collector의 기존 Exception 캐치가 이걸 비치명 오류로 기록한다. `run_config["budget"]`에 `{"web_search_max": N, "fetch_max": M}`을 넣으면 그 상한으로 리셋된다(기본 20/30).
+**충돌 시 지켜야 할 것**: 공유 `WebBudget`은 `create_services`에서 한 번 만들어 `IntegrationSettings.budget`에 저장되고 `tools/web`에 설치된다. `install_web_budget`/`clear_web_budget` 호출 순서를 바꿔 설치를 날리지 말 것. `_mark_single_source`는 `_combined_evidence(state["evidence"], 새로 수집한 evidence)`를 받으므로 이 입력을 잘라내지 말 것.
+**확인**: `.venv/bin/python -m pytest -q` → 89/89.
