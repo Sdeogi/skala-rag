@@ -69,6 +69,8 @@ def make_state(*, domain_disclosed: bool = True, single_source: bool = False, al
         state[f"{name}_analysis"] = {"perspective": name, "technologies": technologies, "status": "complete"}
     state["evidence_check"] = {"passed": all_missing is None, "items": checks}
     state["report"] = build_report(state)
+    # 6장의 도메인 단일 출처 언급은 보고서 작성기가 만드는 문구와 무관하게 이 인자로만 정한다
+    section(state, "6.")["paragraphs"] = [DISCLOSURE] if domain_disclosed else ["일부 항목은 공개 자료에서 근거를 찾지 못했다."]
     return state
 
 

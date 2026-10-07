@@ -116,3 +116,24 @@
 - `SOURCE_COUNT_SCORES`를 비율 기준으로 되돌리지 않는다. 근거가 하나뿐인 판정이 많은 현재 수집 결과에서 편향 통제가 다시 1점으로 급락한다
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 106 passed, `pytest -q` 130 passed, `app.py --mode replay --fixture` 정상. 변이 검사: 각주 검증, `(n)` 해석, 목록 번호 제외를 각각 끄면 해당 테스트가 실패한다. 저장해 둔 실제 replay State로 실제 LLM 요약(`gpt-5.4-mini`)을 켜 보고서를 만들었다: 요약이 새 표기를 보고도 정상 생성(`llm_assisted`), PDF 10쪽(수준 1, 변경 전과 같음), 본문 인용 48개 모두 각주에 있고 각주 문제 0건, 서술 단위 68개 모두 인용에 닿음. 평가 결과(규칙): Groundedness 5, 중립성 5, 편향 통제 3(판정 19개 중 출처 1개 18개, 2개 1개, 평균 3.05), 관점 커버리지 4. 실제 Judge 호출 6회에서 지적한 문장 20건이 모두 보고서 원문과 연결됐다
+
+## 2026-10-07 14:34 · sup/quality · piso
+
+**무엇을**: 각주 표기 변경이 D의 `sup/report-insights`(3·5·6장 개편)와 합쳐질 때 어디서 부딪히는지 미리 시험하고, 그 결과를 남긴다. 병합은 하지 않았다. 테스트 도우미도 고쳤다.
+
+**왜**: 같은 파일(`report.py`, `llm_output.py`, `tests/test_output.py`, `tests/test_llm_output.py`)을 양쪽이 고쳐서, 먼저 합쳐지는 쪽의 상대가 충돌을 풀어야 한다. 이유를 모른 채 풀면 한쪽 변경이 지워지므로 시험한 결과를 적는다.
+
+**바꾼 파일**:
+- `tests/test_quality.py` — `make_state`가 6장 내용을 인자(`domain_disclosed`)로만 정하게 했다. 보고서 작성기가 6장에 "단일 출처" 같은 문구를 자동으로 넣어도(D의 새 6장이 그렇다) 도메인 단일 출처 밝힘 여부 테스트가 흔들리지 않는다
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음
+
+**충돌 시 지켜야 할 것**: `sup/report-insights`와 이 브랜치를 합친 결과를 임시 작업 트리에서 시험했다.
+- 충돌은 `src/skala_rag/agents/llm_output.py` 한 곳이다. `LLMReportAgent` 시스템 메시지에서 이 브랜치가 넣은 한 문장("본문에는 근거 번호가 (번호)로 표시돼 있다. 문장마다 해당 근거 번호를 [번호] 형태로 인용한다.")과 D의 재작성(SUMMARY와 5장을 함께 쓰는 메시지)이 겹친다. D의 메시지를 그대로 두고 "공통 규칙: 문장마다 본문에 쓰인 근거 번호를 [번호]로 인용한다." 부분만 위 문장으로 바꾸면 된다. 이 문장을 빼면 LLM이 본문에 보이는 `(번호)`를 따라 써서 요약의 인용을 못 읽고 규칙 기반 요약으로 대체될 수 있다
+- `report.py`, `tests/test_output.py`, `tests/test_llm_output.py`는 자동으로 합쳐지지만 D의 새 테스트 3개가 옛 `[1]` 표기를 단언해서 실패한다. `test_technical_overview_is_one_paragraph_per_technology`는 `근거: [1]` → `미검증(1).`, `test_llm_insights_replace_chapter_five_and_fall_back_independently_of_the_summary`는 `insights`의 ` [1].` → `(1).`(LLM이 쓴 문장은 `[번호]`이고 보고서에는 `(번호)`로 나온다)로 단언을 고치면 통과한다. 이 시험에서 평가기 쪽 테스트는 모두 통과했다
+- D의 새 5장은 번호 목록을 `(1) …`로 쓴다. 평가기는 문단 맨 앞의 `(n)`을 목록 번호로 읽어 인용으로 세지 않는다. 다만 읽는 사람에게는 각주 표시와 헷갈리니 목록 번호는 `1.`이나 `①`이 낫다
+- D의 새 6장은 단일 출처 판정 수를 자동으로 밝히므로 도메인 단일 출처가 밝혀진 것으로 평가돼(`domain_disclosed=True`) 편향 통제의 도메인 감점이 사라진다
+
+**확인**: 합친 트리에서 실제 replay State로 보고서를 만들어 평가: PDF 10쪽(수준 0), 본문 인용 48개 모두 각주에 있고 각주 문제 0건, Groundedness 5, 중립성 4, 편향 통제 3(출처 1개 판정 9개, 2개 1개), 관점 커버리지 4. 이 브랜치에서 `pytest -q tests/test_quality.py` 37 passed.
