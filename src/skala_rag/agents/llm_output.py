@@ -395,7 +395,7 @@ class LLMReportAgent:
                 "number": number,
                 "technology": evidence[citation_map[number]].get("technology"),
                 "claim": str(evidence[citation_map[number]].get("claim") or "")[:200],
-                "quote": str(evidence[citation_map[number]].get("quote") or "")[:400],
+                "quote": str(evidence[citation_map[number]].get("quote") or "")[:800],  # the same span the quality judge reads
             }
             for number in sorted(citation_map, key=int)
             if citation_map[number] in evidence

@@ -62,7 +62,8 @@ MAX_INSTRUCTIONS = 10
 # 재작성 요청이 헛돌므로, Judge는 호출하되 지적을 점수와 수정 지시 없이 reasons에 참고로만 남긴다.
 JUDGE_SCORED_CHAPTERS = ("SUMMARY", "5")  # 3장은 작성 LLM이 썼을 때만 더한다(_Context.scored_chapters)
 MAX_UNITS_PER_CALL = 14  # Groundedness Judge 호출 하나가 보는 문장·행 수
-EVIDENCE_PER_UNIT = 4
+EVIDENCE_PER_UNIT = 5
+JUDGE_QUOTE_LIMIT = 800  # Judge가 보는 근거 구절 길이. 논문 청크는 1,200자까지라 300자만 보면 뒤쪽의 수치·조건을 "근거에 없음"으로 잘못 본다
 QUOTE_LIMIT = 300
 NEGATION_WINDOW = 40  # 표현 뒤 이 글자 수 안에 부정·회피 표현이 있으면 세지 않는다
 
@@ -108,6 +109,8 @@ JUDGE_GROUNDEDNESS_PROMPT = (
     "각 문장이 인용한 구절로 뒷받침되는지만 평가하고, 근거에 없는 사실을 추론해 보태지 않는다. "
     "근거 구절은 원문의 일부이므로 구절의 뜻을 풀어 쓰거나 요약한 문장, 여러 인용 구절을 합쳐 말할 수 있는 문장은 뒷받침된 것으로 본다. "
     "문제로 보는 것은 (가) 구절에 없는 수치·고유명사·조건·인과 주장, (나) 구절의 범위를 넘는 일반화, (다) 구절과 무관한 인용이다. "
+    "근거를 찾지 못했다는 진술('미확인', '확인되지 않았다', '자료를 찾지 못했다')과 판정 결과를 판정이라고 밝혀 전하는 문장('…로 판정됐다')은 "
+    "구절이 그 말을 그대로 담지 않아도 문제로 보지 않는다. "
     "'공개 정보 기반 추정'이라고 밝힌 TRL 문장은 구절이 해당 단계의 증거(논문 실험, 공개 코드, 프레임워크 통합 등)를 보이면 뒷받침된 것으로 본다. "
     "점수 기준(1~5의 정수): "
     "5점 = 모든 문장이 인용 구절로 직접 뒷받침됨. "
@@ -123,6 +126,8 @@ JUDGE_NEUTRALITY_PROMPT = (
     "보고서의 SUMMARY와 5장 시사점이 주어진다. 이 보고서는 두 기술의 우열·순위·추천을 쓰지 않아야 한다. "
     "정규식으로 잡히지 않는 암묵적 우열을 찾는다: 한 기술의 장점만 나열, 한쪽에만 단서 조항이나 부정 어휘, "
     "같은 사실을 한쪽에는 긍정적으로 다른 쪽에는 부정적으로 표현, 한쪽의 한계만 강조하는 서술. "
+    "각 기술의 판정 결과(판정 라벨, TRL 단계)를 그대로 전하는 것은 두 기술의 값이 서로 달라도 우열 판정이 아니다. "
+    "'더 성숙하다', '앞선다', '낫다'처럼 비교 우위를 말하거나 한쪽을 권할 때만 우열·순위로 본다. "
     "각 기술을 그 기술의 근거가 허용하는 범위에서 서술하는 것은 편향이 아니다. 논문이 보고한 baseline 대비 성능과 조건을 붙인 대칭 서술도 우열 판정이 아니다. "
     "점수 기준(1~5의 정수): 5점 = 두 기술을 같은 틀로 서술하고 우열·추천이 없음. "
     "4점 = 서술 분량이나 어휘가 약간 비대칭이지만 우열로 읽히지 않음. "
@@ -1165,7 +1170,7 @@ class QualityEvaluator:
                         "section": unit.section,
                         "text": unit.text,
                         "evidence": [
-                            {"evidence_id": identifier, "claim": _clip(ctx.evidence[identifier].get("claim")), "quote": _clip(ctx.evidence[identifier].get("quote"))}
+                            {"evidence_id": identifier, "claim": _clip(ctx.evidence[identifier].get("claim")), "quote": _clip(ctx.evidence[identifier].get("quote"), JUDGE_QUOTE_LIMIT)}
                             for identifier in unit.ids[:EVIDENCE_PER_UNIT]
                         ],
                     }
