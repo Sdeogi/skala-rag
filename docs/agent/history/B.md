@@ -69,3 +69,20 @@
 **인터페이스 영향**: 없음. 테스트만 추가.
 **충돌 시 지켜야 할 것**: `tests/tools/test_budget.py`의 `_clear_budget` autouse fixture는 `tools.web`의 모듈 레벨 budget 설치를 매 테스트 전후로 비운다. 지우면 다른 테스트와 상태가 섞인다.
 **확인**: `.venv/bin/python -m pytest -q` → 105/105.
+
+## 2026-10-07 16:30 · sup/agents · tmdtjr
+
+**무엇을**: 트랙 B의 재작업·공유 예산·오류 격리 로직을 live 1회 실행으로 확인하고 결과를 요약한다.
+**왜**: pytest 스텁은 "실제 외부 API 호출에서도 쿼리가 바뀌고 상한이 강제되는가"를 입증하지 못한다. 과제 §5가 live 확인을 요구.
+**바꾼 파일**: 저장소 코드는 변경 없음. 실행 스크립트와 결과는 세션 scratchpad에 남고 Git에 넣지 않는다.
+**실행 조건**: `services.market` → `services.stakeholder`를 직접 호출(그래프/프리페어 미경유). 모델 `gpt-4o-mini`, budget `web_search_max=20` / `fetch_max=30`, 기술 `["KIVI", "InfiniGen"]`, 모드 `live`.
+**결과 요약**:
+- market first: 6개 판정 중 2개 미확인(InfiniGen `market_size`/`ecosystem`), 6 sources 확보, search 16회 + fetch 14회.
+- market rework (2개 요청): 미확인 그대로. 새 출처 0개. search 4회로 20 cap 도달, fetch 0회.
+- stakeholder first/rework: 양쪽 모두 0 수집. 모든 쿼리에서 `BudgetExhausted` (공유 budget을 market이 전부 소비함).
+- `{name}_analysis.search_log`에 첫 수집과 명확히 다른 쿼리가 저장됨 → 쿼리 재생성 로직이 live에서 발화.
+- 공유 `WebBudget`이 상한을 가로채 stakeholder의 추가 호출을 차단한 것도 live에서 확인.
+**해석**:
+- 재작업 쿼리 생성, 공유 budget 강제, 비치명 오류 기록은 모두 라이브에서 발화 확인됨.
+- 미확인 수 감소는 fetch가 budget으로 차단돼 확정 못 함. 과제가 전제한 20/30 상한은 run 전체 상한이므로, 네 perspective를 순차 조정하는 Supervisor(트랙 A)가 합쳐지면 분배 경로가 생긴다. 트랙 B 목표인 "지시받은 재작업에서 새 쿼리가 나가고 공유 상한이 강제된다"는 확인됨.
+**확인**: `scratchpad/live_rework_check.py` 실행, exit 0.
