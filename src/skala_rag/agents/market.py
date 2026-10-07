@@ -232,6 +232,7 @@ def collect_market_evidence(
     *,
     max_attempts_per_topic: int = 6,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    queries_by_topic: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """시장성 평가에 필요한 웹 근거를 제한된 횟수 안에서 수집한다."""
     if technology not in TECHNOLOGY_SEARCH_TERMS:
@@ -268,8 +269,10 @@ def collect_market_evidence(
         groups = []
         topic_error_start = len(output["errors"])
 
-        for template in SEARCH_QUERIES[topic]:
-            query = template.format(technology=technology, **terms)
+        override = (queries_by_topic or {}).get(topic)
+        topic_queries = list(override) if override else list(SEARCH_QUERIES[topic])
+        for template in topic_queries:
+            query = template.format(technology=technology, **terms) if "{" in template else template
             candidates = []
             try:
                 hits = get_search_results(
@@ -586,15 +589,19 @@ def evaluate_market(
     sources_per_topic: int = 2,
     max_attempts_per_topic: int = 6,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    topics: tuple[MarketTopic, ...] = ("market_size", "adoption", "ecosystem"),
+    queries_by_topic: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """기술 하나의 시장성 근거 수집과 Rubric 판정을 한 번에 수행한다."""
     collection = collect_market_evidence(
         technology=technology,
+        topics=topics,
         mode=mode,
         max_results=max_results,
         sources_per_topic=sources_per_topic,
         max_attempts_per_topic=max_attempts_per_topic,
         cache_dir=cache_dir,
+        queries_by_topic=queries_by_topic,
     )
     judgments = build_market_judgments(collection)
     unresolved = [

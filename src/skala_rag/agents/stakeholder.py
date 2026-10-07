@@ -107,10 +107,12 @@ def _search_topic(
     mode: Literal["live", "replay"],
     max_results_per_query: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    queries: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     all_results: list[dict[str, Any]] = []
     search_calls = 0
-    for query in _build_queries(technology, topic):
+    query_list = list(queries) if queries else _build_queries(technology, topic)
+    for query in query_list:
         results = get_search_results(
             query=query,
             max_results=max_results_per_query,
@@ -156,6 +158,7 @@ def _collect_topic_evidence(
     max_attempts: int = 8,
     max_results_per_query: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    queries: list[str] | None = None,
 ) -> dict[str, Any]:
     """하나의 이해관계자 축에서 실제 발언 근거를 수집한다."""
     topic_config = STAKEHOLDER_TOPICS[topic]
@@ -173,6 +176,7 @@ def _collect_topic_evidence(
         mode=mode,
         max_results_per_query=max_results_per_query,
         cache_dir=cache_dir,
+        queries=queries,
     )
 
     direct: list[dict[str, Any]] = []
@@ -266,6 +270,8 @@ def collect_stakeholder_evidence(
     max_attempts_per_topic: int = 8,
     max_results_per_query: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    topics: tuple[StakeholderTopic, ...] | None = None,
+    queries_by_topic: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """기술 하나의 이해관계자 실제 발언 근거를 세 축에서 수집한다."""
     if technology not in TECHNOLOGY_SEARCH_TERMS:
@@ -283,7 +289,10 @@ def collect_stakeholder_evidence(
         "metrics": {"web_search_calls": 0, "fetch_attempts": 0},
     }
 
-    for topic in STAKEHOLDER_TOPICS:
+    selected = tuple(topics) if topics else tuple(STAKEHOLDER_TOPICS.keys())
+    for topic in selected:
+        if topic not in STAKEHOLDER_TOPICS:
+            raise ValueError(f"지원하지 않는 topic: {topic}")
         collected = _collect_topic_evidence(
             technology=technology,
             topic=topic,
@@ -292,6 +301,7 @@ def collect_stakeholder_evidence(
             max_attempts=max_attempts_per_topic,
             max_results_per_query=max_results_per_query,
             cache_dir=cache_dir,
+            queries=(queries_by_topic or {}).get(topic),
         )
         output["topics"][topic] = collected["evidence"]
         output["indirect_evidence"].extend(collected["indirect_evidence"])
