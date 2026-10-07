@@ -20,6 +20,22 @@ Perspective = Literal["market", "stakeholder", "domain", "trl"]
 Status = Literal["complete", "insufficient_evidence"]
 
 PERSPECTIVES: tuple[str, ...] = ("market", "stakeholder", "domain", "trl")
+# Every sub-agent the supervisor dispatches (the technical agent plus the four perspectives).
+AGENTS: tuple[str, ...] = ("technical", *PERSPECTIVES)
+AgentState = Literal["pending", "running", "done", "insufficient", "failed"]
+QualityAction = Literal["pass", "rewrite_report", "recollect", "accept_with_limits"]
+QUALITY_ITEMS: tuple[str, ...] = ("groundedness", "neutrality", "bias", "coverage")
+
+# Supervisor limits. ``MAX_SUPERVISOR_STEPS`` is checked against the longest
+# possible path of the compiled graph in ``tests/test_graph.py``.
+MAX_REWORK_PER_AGENT = 2
+MAX_QUALITY_LOOPS = 2
+MAX_SUPERVISOR_STEPS = 20
+QUALITY_THRESHOLD = 4
+DECISION_LOG_LIMIT = 30
+# ``evidence[*].quote`` is clipped to this many characters at the graph boundary so
+# checkpoints stay small; the review LLM still needs a readable passage.
+EVIDENCE_QUOTE_LIMIT = 1200
 PERSPECTIVE_TITLES: dict[str, str] = {
     "market": "시장성",
     "stakeholder": "이해관계자",
@@ -271,6 +287,91 @@ class MissingQuestion(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class AgentStatus(BaseModel):
+    """Supervisor bookkeeping for one sub-agent (``state["agent_status"][name]``)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    status: AgentState = "pending"
+    attempts: int = Field(default=0, ge=0)  # rework rounds already sent to this agent
+    last_error: str = ""
+
+
+class ReworkRequest(BaseModel):
+    """One rework instruction the supervisor sends to a perspective agent."""
+
+    model_config = ConfigDict(extra="allow")
+
+    perspective: Perspective
+    technology: str
+    field: str
+    reasons: list[str] = Field(default_factory=list)
+    review_reason: str = ""
+    question: str = ""
+    attempt: int = Field(default=0, ge=0)  # rework round of this perspective (1-based); 0 = not assigned yet, the supervisor fills it
+
+    @field_validator("reasons", mode="before")
+    @classmethod
+    def _reasons_list(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return [str(item) for item in value]
+
+
+class Decision(BaseModel):
+    """One entry of ``state["decision_log"]``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    step: int = Field(ge=1)
+    decision: str
+    reason: str = ""
+
+
+class QualityItem(BaseModel):
+    """Score of one quality criterion. ``score`` is the lower of the rule and LLM scores."""
+
+    model_config = ConfigDict(extra="allow")
+
+    score: int | None = Field(default=None, ge=1, le=5)
+    rule_score: int = Field(default=5, ge=1, le=5)
+    llm_score: int | None = Field(default=None, ge=1, le=5)
+    reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _fill_score(self) -> "QualityItem":
+        if self.score is None:
+            self.score = self.rule_score if self.llm_score is None else min(self.rule_score, self.llm_score)
+        return self
+
+
+class QualityInstruction(BaseModel):
+    """A fix the report writer applies when the quality node asks for a rewrite."""
+
+    model_config = ConfigDict(extra="allow")
+
+    item: str
+    section: str = ""
+    problem: str = ""
+    quote: str = ""
+    fix: str = ""
+
+
+class QualityResult(BaseModel):
+    """Output of the quality node (``state["quality_result"]``)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    passed: bool
+    threshold: int = QUALITY_THRESHOLD
+    items: dict[str, QualityItem] = Field(default_factory=dict)
+    action: QualityAction
+    instructions: list[QualityInstruction] = Field(default_factory=list)
+    rework_requests: list[ReworkRequest] = Field(default_factory=list)
+
+
 class ErrorRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -393,9 +494,13 @@ def validate_update(node: str, update: Mapping[str, Any]) -> tuple[dict[str, Any
                         continue
                     payload[id_field] = identifier
                 try:
-                    kept[str(identifier)] = schema.model_validate(payload).model_dump()
+                    record_data = schema.model_validate(payload).model_dump()
                 except ValidationError as exc:
                     problems.append(f"{key}[{identifier}]: {summarize_validation_error(exc)}")
+                    continue
+                if key == "evidence" and len(str(record_data.get("quote") or "")) > EVIDENCE_QUOTE_LIMIT:
+                    record_data["quote"] = str(record_data["quote"])[:EVIDENCE_QUOTE_LIMIT]
+                kept[str(identifier)] = record_data
             clean[key] = kept
         elif key in PERSPECTIVE_KEYS:
             expected = PERSPECTIVE_KEYS[key]
