@@ -42,12 +42,12 @@ def test_report_follows_reference_outline_and_filters_unknown_ids():
     headings = [(section["heading"], section["level"]) for section in report["sections"]]
     assert headings[0] == ("SUMMARY", 1) and headings[-1] == ("REFERENCE", 1)
     level_one = [heading for heading, level in headings if level == 1]
-    assert level_one == ["SUMMARY", "1. 분석 배경", "2. 기술 선정", "3. 기술 개요", "4. 관점별 평가", "5. 시사점", "6. 한계점", "부록. 근거 목록", "REFERENCE"]
+    assert level_one == ["SUMMARY", "1. 분석 배경", "2. 기술 선정", "3. 기술 개요", "4. 관점별 평가", "5. 시사점", "6. 한계점", "각주", "REFERENCE"]
     assert [heading for heading, level in headings if level == 2] == ["4.1 시장성", "4.2 이해관계자", "4.3 도메인 적용", "4.4 기술 성숙도"]
     markdown = report["markdown"]
     assert markdown.startswith("# SUMMARY") and "# REFERENCE" in markdown
     assert markdown.rstrip().endswith("https://example.org/paper")
-    assert "[1]" in markdown and "[e1]" not in markdown and "[bad]" not in markdown and "미확인" in markdown
+    assert "(1)" in markdown and "[1]" not in markdown and "[e1]" not in markdown and "[bad]" not in markdown and "미확인" in markdown
     assert report["citation_map"] == {"1": "e1"} and report["used_source_ids"] == ["s1"]
     assert "공개 정보에 근거한 추정" in markdown
     assert "InfiniGen을" in markdown and "KIVI와" in markdown  # particle handling
@@ -76,21 +76,22 @@ def test_citations_are_numbered_by_first_appearance_and_only_cited_items_are_lis
     report = build_report(state)
     assert report["citation_map"] == {"1": "e2", "2": "e1"}  # order of first appearance (SUMMARY cites e2 first)
     assert report["used_source_ids"] == ["s2", "s1"]
-    appendix = next(section for section in report["sections"] if section["heading"].startswith("부록"))["table"]["rows"]
-    assert [row[:3] for row in appendix] == [["[1]", "KIVI", "[R1]"], ["[2]", "KIVI", "[R2]"]]
+    footnotes = next(section for section in report["sections"] if section["heading"] == "각주")["table"]["rows"]
+    assert [row[:2] for row in footnotes] == [["(1)", "KIVI"], ["(2)", "KIVI"]]
+    assert footnotes[0][2].startswith("[R1] ") and footnotes[1][2].startswith("[R2] ")  # each footnote names its source
     references = report["sections"][-1]["paragraphs"]
     assert len(references) == 2 and references[0].startswith("[R1] ") and references[1].startswith("[R2] Liu, Z. et al.(2024)")
     assert "never cited" not in report["markdown"] and "unused" not in report["markdown"]
     market = next(section for section in report["sections"] if section["heading"] == "4.1 시장성")
     adoption = next(row for row in market["table"]["rows"] if row[0] == "KIVI" and row[1] == "상용화와 채택 현황")
-    assert adoption[-1] == "[1] [2]"
+    assert adoption[-1] == "(1)(2)"
 
 
 def test_number_citations_leaves_non_evidence_brackets_untouched():
     sections = [{"heading": "h", "paragraphs": ["[상충] 본문 [e9] [REDACTED] [unknown]"], "table": {"columns": ["c"], "rows": [["[e1] [e9]"]]}, "level": 1}]
     numbered, citation_map = number_citations(sections, {"e1": {}, "e9": {}})
-    assert numbered[0]["paragraphs"] == ["[상충] 본문 [1] [REDACTED] [unknown]"]
-    assert numbered[0]["table"]["rows"] == [["[2] [1]"]] and citation_map == {"1": "e9", "2": "e1"}
+    assert numbered[0]["paragraphs"] == ["[상충] 본문 [REDACTED] [unknown](1)"]  # the marker moves to the end of the clause
+    assert numbered[0]["table"]["rows"] == [["(1)(2)"]] and citation_map == {"1": "e9", "2": "e1"}
     assert sections[0]["paragraphs"] == ["[상충] 본문 [e9] [REDACTED] [unknown]"]  # input is not mutated
 
 
@@ -102,8 +103,8 @@ def test_trl_stage_details_and_summary_limit():
     trl_section = next(section for section in report["sections"] if section["heading"] == "4.4 기술 성숙도")
     assert any("TRL 5 미충족 (PR 미확인)" in p and "vLLM 통합 PR" in p for p in trl_section["paragraphs"])
     assert len(report["sections"][0]["paragraphs"][0]) <= SUMMARY_LIMIT
-    appendix = next(section for section in report["sections"] if section["heading"].startswith("부록"))
-    assert all(len(row[-1]) <= LAYOUTS[0].quote for row in appendix["table"]["rows"])
+    footnotes = next(section for section in report["sections"] if section["heading"] == "각주")
+    assert all(len(row[-1]) <= LAYOUTS[0].quote for row in footnotes["table"]["rows"])
 
 
 def test_report_redacts_secrets_and_private_contact_details():
@@ -227,3 +228,25 @@ def test_save_outputs_uses_report_name_and_reports_pdf_font(tmp_path):
     assert f'"pdf_font": "{expected_font}"' in manifest
     assert '"pdf_pages": ' in manifest and '"layout": {' in manifest
     assert "<table>" in (tmp_path / "RAG-Output_test.html").read_text(encoding="utf-8")
+
+
+def test_markers_sit_at_the_end_of_their_clause_not_inside_the_sentence():
+    sections = [
+        {
+            "heading": "h",
+            "paragraphs": [
+                "KIVI는 [e1] 2비트로 압축하되 [e2] 정확도는 유지했다. InfiniGen은 CPU로 내보낸다 [e3]. 근거: [e1] [e2]",
+                "TRL 3 충족 [e1]; TRL 4 충족 [e2] [e3]; TRL 5 미충족 (통합 근거 미확인; 추가 확인 필요).",
+                "Fig. 3 [e1]에서 보듯 증가한다.",
+            ],
+            "table": None,
+            "level": 1,
+        }
+    ]
+    numbered, citation_map = number_citations(sections, {"e1": {}, "e2": {}, "e3": {}})
+    assert numbered[0]["paragraphs"] == [
+        "KIVI는 2비트로 압축하되 정확도는 유지했다(1)(2). InfiniGen은 CPU로 내보낸다(1)(2)(3).",  # trailing "근거: …" joins the last sentence
+        "TRL 3 충족(1); TRL 4 충족(2)(3); TRL 5 미충족 (통합 근거 미확인; 추가 확인 필요).",  # one marker group per ";" clause, none inside brackets
+        "Fig. 3에서 보듯 증가한다(1).",  # an abbreviation's period does not end the clause
+    ]
+    assert citation_map == {"1": "e1", "2": "e2", "3": "e3"}

@@ -76,3 +76,43 @@
 **충돌 시 지켜야 할 것**: `resolve_citations`는 `citation_map`이 있을 때 `[n]`을 번호로, 없을 때 `[근거 ID]`를 그대로 읽는다. 본문 인용 형식이나 `citation_map` 키 형태(문자열 번호 → 근거 ID)를 바꾸면 평가기가 존재하지 않는 인용으로 보고 Groundedness를 1점으로 준다
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 97 passed, `pytest -q` 121 passed. 저장해 둔 replay State로 새 `build_report`를 다시 만들어 평가: 번호 인용 48개를 모두 해석했고, 서술 단위 67개가 모두 인용에 닿으며(규칙 5점) 중립성 5점이다(D가 문장을 줄이면서 약한 비교 표현이 사라짐). 편향 통제는 다중 출처 판정 비율 5%로 1점, 커버리지 79%로 4점이다. 실제 Judge 호출 6회에서 지적한 문장 18건이 모두 보고서 원문과 연결됐고 Groundedness 3점, 중립성 5점이 나왔다
+
+## 2026-10-07 14:33 · sup/quality · piso
+
+**무엇을**: (1) 보고서 본문의 근거 인용을 문장 중간의 `[번호]`에서, 문장(절) 끝에 모은 각주 표시 `(1)(2)`로 바꾸고 보고서 끝에 "각주" 절을 두었다. 평가기는 새 표기를 읽고 각주·출처가 State의 근거와 맞는지 확인한다. (2) 편향 통제 점수를 "출처 2개 이상 인용한 판정의 비율"에서 "판정별 출처 수 점수의 평균"으로 바꿔, 근거가 하나뿐인 판정이 평균 3점이 되게 했다.
+
+**왜**:
+- 본문 문장 중간에 근거 표시가 끼어 읽기 불편하다는 검토 의견이 있었다. 표시는 문장 끝으로 모으고 근거와 출처는 보고서 끝 각주에서 보게 한다
+- 실제 보고서에서 시장성·이해관계자·TRL 판정의 대부분이 근거를 1개만 인용해(19개 중 18개) 기존 방식에서는 편향 통제가 1점으로 급락했다. 근거가 하나뿐인 것을 최하점으로 보는 것은 과하다
+
+**바꾼 파일**:
+- `src/skala_rag/agents/quality.py`
+  - `resolve_citations(..., parens=False)`: `(1)`, `(1)(2)`, `(1, 2)`를 인용으로 읽는다(`citation_map`이 있고 `parens=True`인 장에서만). 문단 맨 앞의 `(1) 항목`(목록 번호)과 네 자리 이상 숫자(연도)는 인용으로 보지 않는다. 요약·3·4·5장만 `parens=True`라서 6장 등의 `(1) … (2) …` 열거는 영향이 없다. 기존 `[n]`, `[근거 ID]`도 그대로 읽는다
+  - `parse_report`: "각주" 절(이전 이름 "부록"도 허용)과 REFERENCE 절을 본문과 따로 읽어 `parsed.footnotes`, `parsed.references`에 담는다. 두 절은 문장 평가·중립성 검사에서 빠진다. `_read_footnotes`, `_read_references` 추가
+  - `footnote_findings`(신규): 본문이 인용한 각 번호에 대해 각주 행이 있는지, 각주의 기술이 근거의 기술과 같은지, 출처 라벨(`[R1]`)이 REFERENCE에 있고 그 항목이 근거의 출처(URL 또는 제목)와 맞는지, 인용 구절이 근거 원문과 맞는지 확인한다. 따라갈 수 없는 인용(각주 절·행 없음, 출처 미등록, REFERENCE 항목 없음)은 Groundedness 1점, 내용 불일치는 최대 2점(`FOOTNOTE_MISMATCH_CAP`)이다. 인용 구절 칸이 비어 있으면(쪽수 제한으로 줄인 판) 구절 대조는 건너뛴다. `citation_map`이 없는 옛 형식 보고서는 검사하지 않는다
+  - `bias_rule`: `BIAS_MULTI_SOURCE_BANDS` 삭제, `SOURCE_COUNT_SCORES` 추가. 판정 하나의 점수는 서로 다른 출처 1개 3점, 2개 4점, 3개 이상 5점이고 항목 점수는 그 평균을 반올림한 값이다(3.5는 4점). 도메인 판정이 단일 출처인 것은 한계점에 밝혔으면 평균에서 빼고, 밝히지 않았으면 3점으로 세면서 최대 3점으로 제한하는 기존 규칙도 그대로다. 측정값 `multi_source_ratio`는 `mean_source_score`, `judgments_by_source_count`로 바뀌었다
+  - `_plain`: Judge 인용문 대조에서 `(1)` 표시도 지운 글로 비교한다
+- `tests/test_quality.py` — 각주 표시·각주 검증·편향 점수 테스트 추가(37개)
+- 남의 파일(아래 참고): `src/skala_rag/agents/report.py`, `src/skala_rag/agents/llm_output.py`, `tests/test_output.py`, `tests/test_llm_output.py`
+
+**남의 파일**: 트랙 D 파일을 최소한으로 고쳤다. 같은 파일을 `sup/report-insights`에서 D가 고치는 중이라 병합 때 충돌이 날 수 있다.
+- `src/skala_rag/agents/report.py`
+  - `number_citations`: 같은 시그니처와 반환 값(번호는 첫 등장 순서, `citation_map`)인데, 출력이 `[n]` 제자리 치환에서 "토큰을 문장에서 빼고 `(n)`을 그 절 끝(마침표 앞)에 붙이기"로 바뀌었다. `;`로 이어진 절은 절마다 표시를 붙이고, 괄호 안과 `Fig.` 같은 약어의 마침표에서는 자르지 않는다. 토큰 앞에 남는 `근거:` 꼬리표는 지우고, 문단 끝에 홀로 남은 `근거: [a] [b]`의 표시는 앞 문장에 붙인다. 근거 ID가 아닌 대괄호(`[상충]`, `[REDACTED]`)는 그대로 둔다. 도우미 `_clauses`, `_attach`와 상수 `TOKEN_WITH_SPACE`, `_DANGLING_LABEL`, `_ABBREVIATIONS` 추가
+  - "부록. 근거 목록" 절을 "각주"로 개명(`FOOTNOTE_HEADING`, `SMALL_SECTIONS`). `_evidence_table`에 `sources` 인자 추가: 번호 칸이 `(n)`이 되고 출처 칸이 `[R1] 저자·사이트명`(24자까지)이 된다. 출처 칸이 좁아 쪽수가 늘어서(실제 State 10쪽 → 11쪽) `_column_weights`에서 `출처` 0.6 → 1.2, `인용 구절` 5.0 → 4.4로 조정했다
+  - 4장 안내 문구와 이해관계자 관점 문구의 "부록 근거 목록"을 "각주"로 바꿨다
+- `src/skala_rag/agents/llm_output.py` — `LLMReportAgent` 시스템 메시지에 "본문에는 근거 번호가 (번호)로 표시돼 있다. 문장마다 해당 근거 번호를 [번호] 형태로 인용한다."를 넣었다. LLM이 요약에서 쓰는 `[번호]`는 내부용이고 최종 표기는 `build_report`가 정한다
+- `tests/test_output.py`, `tests/test_llm_output.py` — `[1]` → `(1)`, 부록 → 각주로 단언을 고치고 표시 위치 테스트 1개 추가
+
+**인터페이스 영향**:
+- 트랙 D: 본문 인용 표기가 `[n]` → `(n)`, 절 이름이 "부록. 근거 목록" → "각주", 각주 표의 출처 칸이 `[R#] 이름`이다. `report["citation_map"]`과 `sections`의 구조, 다른 장 제목은 그대로다. 5장 항목에 `(1) …`처럼 번호 목록을 쓰는 것은 문단 맨 앞이면 평가기가 각주 표시와 구분하지만, 보고서를 읽는 사람에게는 헷갈리니 `1.`이나 `①` 같은 다른 번호 형식을 권한다
+- 트랙 A: 없음. 평가기의 입력(`state["report"]`)과 출력 형식은 그대로다
+- 평가 기준 변경: 편향 통제는 근거가 하나뿐인 판정이 많아도 평균 3점에 머문다. 통과선은 여전히 4점이므로 이 상태에서도 `recollect`가 나온다
+
+**충돌 시 지켜야 할 것**:
+- `number_citations`를 `[n]` 제자리 치환으로 되돌리면 안 된다. 본문 인용이 문장 중간에 끼어 읽기 어려워진다
+- `_evidence_table`의 `sources` 인자와 `_column_weights`의 `출처`·`인용 구절` 가중치를 되돌리면 안 된다. 출처 이름 칸이 좁으면 각주 표가 길어져 10쪽을 넘는다
+- 각주 절 이름(`FOOTNOTE_HEADING`)과 각주 표의 열 이름(`번호`, `기술`, `출처`, `인용 구절`), 번호 칸의 `(n)` 형식, 출처 칸 맨 앞의 `[R#]`는 평가기의 `_read_footnotes`, `footnote_findings`가 읽는다. 바꾸면 알려 달라
+- 평가기의 `LEADING_ENUMERATOR`를 지우면 `(1) 항목` 목록 번호가 존재하지 않는 인용으로 잡혀 Groundedness가 1점이 된다
+- `SOURCE_COUNT_SCORES`를 비율 기준으로 되돌리지 않는다. 근거가 하나뿐인 판정이 많은 현재 수집 결과에서 편향 통제가 다시 1점으로 급락한다
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 106 passed, `pytest -q` 130 passed, `app.py --mode replay --fixture` 정상. 변이 검사: 각주 검증, `(n)` 해석, 목록 번호 제외를 각각 끄면 해당 테스트가 실패한다. 저장해 둔 실제 replay State로 실제 LLM 요약(`gpt-5.4-mini`)을 켜 보고서를 만들었다: 요약이 새 표기를 보고도 정상 생성(`llm_assisted`), PDF 10쪽(수준 1, 변경 전과 같음), 본문 인용 48개 모두 각주에 있고 각주 문제 0건, 서술 단위 68개 모두 인용에 닿음. 평가 결과(규칙): Groundedness 5, 중립성 5, 편향 통제 3(판정 19개 중 출처 1개 18개, 2개 1개, 평균 3.05), 관점 커버리지 4. 실제 Judge 호출 6회에서 지적한 문장 20건이 모두 보고서 원문과 연결됐다

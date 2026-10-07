@@ -47,7 +47,7 @@ def test_llm_report_accepts_grounded_summary_and_rejects_fabricated_citation():
     state = sample_state()
     state["synthesis"] = LLMSynthesisAgent(FakeModel({"pairs": [{"id": "C0", "reason": "r [e1]", "uncertainty": "u [e1]"}]}))(state)
     good = LLMReportAgent(FakeModel({"summary": "KIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [1]. TRL 판정은 공개 정보 기반 추정이다 [1]."}))(state)
-    assert good["markdown"].startswith("# SUMMARY\n\nKIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [1].")
+    assert good["markdown"].startswith("# SUMMARY\n\nKIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다(1).")
     assert good["generation_mode"] == "llm_assisted" and good["metrics"][0]["node"] == "report"
     assert good["citation_map"] == {"1": "e1"} and "[e1]" not in good["markdown"]
     bad = LLMReportAgent(FakeModel({"summary": "KIVI는 2029년에 입증되었다 [9]."}))(state)
@@ -76,5 +76,5 @@ def test_overlong_summary_is_trimmed_at_a_sentence_boundary():
     report = LLMReportAgent(FakeModel({"summary": long_summary}))(state)
     assert report["generation_mode"] == "llm_assisted" and report.get("summary_trimmed") is True
     text = report["sections"][0]["paragraphs"][0]
-    assert len(text) <= 1200 and text.endswith("[1].")
+    assert len(text) <= 1200 and text.endswith("(1).")
     assert trim_to_sentences("짧은 문장이다.", 100) == "짧은 문장이다."

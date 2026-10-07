@@ -81,22 +81,20 @@ def add_paragraph(state: dict, prefix: str, text: str) -> None:
 
 
 def as_evidence_ids(state: dict) -> dict:
-    """번호 인용(``[n]``)을 ``[근거 ID]``로 되돌리고 ``citation_map``을 뗀 State 사본(옛 형식 보고서)."""
+    """각주 표시 ``(n)``를 ``[근거 ID]``로 되돌리고 각주 절과 ``citation_map``을 뗀 State 사본(각주 이전 형식 보고서)."""
     copy = deepcopy(state)
     mapping = copy["report"].pop("citation_map")
 
     def convert(text: str) -> str:
-        def replace(match: re.Match[str]) -> str:
-            return " ".join(f"[{mapping[number]}]" for number in re.findall(r"\d+", match.group(1)))
+        return re.sub(r"\((\d{1,3})\)", lambda match: f" [{mapping[match.group(1)]}]", text)
 
-        return re.sub(r"\[(\d+(?:\s*,\s*\d+)*)\]", replace, text)
-
+    copy["report"]["sections"] = [item for item in copy["report"]["sections"] if item["heading"] != "각주"]
     for item in copy["report"]["sections"]:
-        if item["heading"].startswith(("REFERENCE", "부록")):
+        if item["heading"].startswith("REFERENCE"):
             continue
         item["paragraphs"] = [convert(text) for text in item["paragraphs"]]
         if item.get("table"):
-            item["table"]["rows"] = [[convert(cell) for cell in row] for row in item["table"]["rows"]]
+            item["table"]["rows"] = [[convert(cell).strip() for cell in row] for row in item["table"]["rows"]]
     return copy
 
 
@@ -128,7 +126,7 @@ def test_split_sentences_attaches_trailing_citation():
 def test_clean_report_passes_with_rules_only():
     result, metrics, _ = evaluate(make_state())
     assert result["passed"] and result["action"] == "pass"
-    assert {name: item["score"] for name, item in result["items"].items()} == {"groundedness": 5, "neutrality": 5, "bias": 5, "coverage": 5}
+    assert {name: item["score"] for name, item in result["items"].items()} == {"groundedness": 5, "neutrality": 5, "bias": 4, "coverage": 5}
     assert all(item["llm_score"] is None for item in result["items"].values())
     assert result["instructions"] == [] and result["rework_requests"] == []
     assert metrics and metrics[-1]["node"] == "quality"
@@ -194,9 +192,9 @@ def test_citation_to_missing_evidence_is_groundedness_one():
 
 def test_both_citation_formats_give_the_same_result():
     state = make_state()
-    assert state["report"]["citation_map"]  # 보고서가 번호 인용을 쓴다
+    assert state["report"]["citation_map"]  # 보고서가 각주 표시 (n)을 쓴다
     old_format = as_evidence_ids(state)
-    assert "citation_map" not in old_format["report"] and "[KIVI-w1]" in old_format["report"]["markdown"] + str(old_format["report"]["sections"])
+    assert "citation_map" not in old_format["report"] and "[KIVI-w1]" in str(old_format["report"]["sections"])
     assert evaluate(state)[0] == evaluate(old_format)[0]
     for broken in (state, old_format):  # 존재하지 않는 인용은 두 형식 모두 Groundedness 1점
         for token in ("[ghost]", "[99]"):
@@ -238,9 +236,11 @@ def test_failed_check_shown_as_confirmed_caps_groundedness():
 
 
 # ── 편향 통제 ──
-def test_all_judgments_on_one_source_need_recollection():
-    result, _, _ = evaluate(make_state(single_source=True))
-    assert result["items"]["bias"]["score"] == 1 and result["action"] == "recollect"
+def test_judgments_with_a_single_source_score_three_on_average_not_one():
+    result, _, evaluator = evaluate(make_state(single_source=True))
+    assert result["items"]["bias"]["score"] == 3 and result["action"] == "recollect"  # 통과선(4점)에는 못 미치므로 재수집 대상
+    assert evaluator.last_measurements["bias"]["mean_source_score"] == 3.0
+    assert any("평균 3.0점" in reason for reason in result["items"]["bias"]["reasons"])
     requests = result["rework_requests"]
     assert requests and all(item["reasons"] == ["missing_evidence"] for item in requests)
     assert all(item["review_reason"] == "단일 출처 의존: 다른 출처의 근거 필요" and item["attempt"] == 0 for item in requests)
@@ -399,8 +399,109 @@ def test_judge_quotes_are_found_across_cells_citations_and_sentences():
     cross_cells = f"{row.cells['항목']} | {row.cells['판정']}"  # 칸 둘에 걸친 인용
     assert evaluator._locate(cross_cells, parsed).text == row.cells["판정 이유"]
     sentence = sample_sentence(state)
-    without_citations = re.sub(r"\s*\[[^\[\]]+\]", "", sentence)  # 문장 중간 인용을 생략한 인용
+    without_citations = re.sub(r"\(\d{1,3}\)", "", re.sub(r"\s*\[[^\[\]]+\]", "", sentence))  # 각주 표시를 생략한 인용
     assert evaluator._locate(without_citations, parsed).text == sentence
     assert evaluator._locate("…" + sentence[:20] + "…", parsed) is not None
     assert evaluator._locate("보고서에 없는 문장이다", parsed) is None
     assert evaluator._locate("", parsed) is None
+
+
+def test_bias_score_follows_the_number_of_sources_per_judgment():
+    base = make_state()
+    assert evaluate(base)[0]["items"]["bias"]["score"] == 4  # 전부 출처 2개: 4점
+    mixed = make_state()
+    for name in ("market", "stakeholder", "trl"):  # 일부는 출처 하나, 일부는 셋
+        for tech, judgments in mixed[f"{name}_analysis"]["technologies"].items():
+            for index, judgment in enumerate(judgments.values()):
+                judgment["evidence_ids"] = [f"{tech}-w1"] if index % 2 else [f"{tech}-w1", f"{tech}-w2", f"{tech}-p"]
+    result, _, evaluator = evaluate(mixed)
+    histogram = evaluator.last_measurements["bias"]["judgments_by_source_count"]
+    assert histogram["1"] > 0 and histogram["3+"] > 0 and histogram["2"] == 0
+    assert result["items"]["bias"]["score"] in (3, 4)
+    assert 3.0 < evaluator.last_measurements["bias"]["mean_source_score"] < 5.0
+
+
+# ── 각주 표시와 각주 절 ──
+def footnote_rows(state: dict) -> list[list[str]]:
+    return section(state, "각주")["table"]["rows"]
+
+
+def test_report_with_footnotes_has_no_inline_tokens_and_every_marker_is_listed():
+    state = make_state()
+    report = state["report"]
+    assert report["citation_map"] and footnote_rows(state)
+    body = "\n".join(p for item in report["sections"] if item["heading"] not in ("각주", "REFERENCE") for p in item["paragraphs"])
+    assert "[KIVI-" not in body and "[InfiniGen-" not in body  # 근거 ID가 문장 중간에 끼지 않는다
+    parsed = parse_report(report, list(TECHS), state["evidence"])
+    assert set(parsed.footnotes) == set(report["citation_map"]) and parsed.references and not parsed.unknown
+    result, _, evaluator = evaluate(state)
+    assert evaluator.last_measurements["groundedness"]["footnote_problems"] == 0 and result["items"]["groundedness"]["score"] == 5
+
+
+def test_list_numbers_and_years_are_not_read_as_footnote_markers():
+    evidence = {"a-1": {}}
+    citation_map = {"1": "a-1"}
+    assert resolve_citations("(2) 둘째 항목이다(1).", citation_map, evidence, parens=True) == (["a-1"], [])  # 맨 앞 (2)는 목록 번호
+    assert resolve_citations("KIVI(2024)는 발표됐다.", citation_map, evidence, parens=True) == ([], [])
+    assert resolve_citations("본문이다(1)(1).", citation_map, evidence, parens=True) == (["a-1"], [])
+    assert resolve_citations("본문이다(1, 2).", citation_map, evidence, parens=True) == (["a-1"], ["(2)"])
+    assert resolve_citations("본문이다(1).", {}, evidence, parens=True) == ([], [])  # citation_map이 없으면 (1)은 인용이 아니다
+    assert resolve_citations("본문이다(1).", citation_map, evidence) == ([], [])  # 인용을 쓰지 않는 장
+    assert resolve_citations("본문이다(1).", citation_map, evidence, parens=True) == (["a-1"], [])
+
+
+def test_enumerations_in_static_sections_do_not_count_as_citations():
+    state = make_state()
+    add_paragraph(state, "6.", "설계는 (1) 대칭 조사, (2) 반례 질의, (99) 라벨 통제로 이뤄진다.")
+    add_paragraph(state, "5.", "(99) 첫 항목: KIVI는 잘 동작한다(1).")
+    result, _, _ = evaluate(state)
+    assert result["items"]["groundedness"]["score"] == 5
+
+
+def test_marker_to_a_missing_footnote_is_an_untraceable_citation():
+    state = make_state()
+    state["report"]["sections"] = [item for item in state["report"]["sections"] if item["heading"] != "각주"]
+    result, _, _ = evaluate(state)
+    assert result["items"]["groundedness"]["score"] == 1 and result["action"] == "rewrite_report"
+    assert any("각주 절이 없음" in item["problem"] for item in result["instructions"])
+    state = make_state()
+    removed = footnote_rows(state).pop(0)[0]
+    result, _, _ = evaluate(state)
+    assert result["items"]["groundedness"]["score"] == 1
+    assert any(removed in item["problem"] and "각주가 없음" in item["problem"] for item in result["instructions"])
+
+
+def test_footnote_with_unregistered_or_missing_source_is_untraceable():
+    state = make_state()
+    footnote_rows(state)[0][2] = "미등록"
+    assert evaluate(state)[0]["items"]["groundedness"]["score"] == 1
+    state = make_state()
+    state["report"]["sections"] = [item for item in state["report"]["sections"] if not item["heading"].startswith("REFERENCE")]
+    result, _, _ = evaluate(state)
+    assert result["items"]["groundedness"]["score"] == 1
+    assert any("REFERENCE에 없음" in item["problem"] for item in result["instructions"])
+
+
+def test_footnote_that_disagrees_with_the_evidence_caps_groundedness_at_two():
+    wrong_quote = make_state()
+    footnote_rows(wrong_quote)[0][-1] = "근거에 없는 전혀 다른 문장이 인용 구절로 적혀 있다"
+    result, _, _ = evaluate(wrong_quote)
+    assert result["items"]["groundedness"]["score"] == 2 and not result["passed"]
+    assert any("인용 구절이 근거의 원문과 다름" in item["problem"] for item in result["instructions"])
+    wrong_technology = make_state()
+    row = footnote_rows(wrong_technology)[0]
+    row[1] = "InfiniGen" if row[1] == "KIVI" else "KIVI"
+    assert evaluate(wrong_technology)[0]["items"]["groundedness"]["score"] == 2
+    wrong_source = make_state()
+    row = footnote_rows(wrong_source)[0]
+    other = next(label for label in ("[R1]", "[R2]") if not row[2].startswith(label))
+    row[2] = other + " 다른 출처"
+    assert evaluate(wrong_source)[0]["items"]["groundedness"]["score"] == 2
+
+
+def test_empty_quote_column_from_the_length_budget_is_not_a_mismatch():
+    state = make_state()
+    for row in footnote_rows(state):
+        row[-1] = ""  # 쪽수 제한으로 인용 구절 칸을 비운 판
+    result, _, _ = evaluate(state)
+    assert result["items"]["groundedness"]["score"] == 5

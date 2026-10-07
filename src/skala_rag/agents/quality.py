@@ -36,13 +36,16 @@ DEFAULT_MAX_JUDGE_CALLS = 6
 # (하한, 점수) 쌍. 값이 하한 이상이면 그 점수를 주고, 어디에도 못 들면 1점이다.
 # live 보고서의 실제 측정값을 본 뒤 조정한다(조정한 값과 이유는 작업 이력에 적는다).
 GROUNDEDNESS_BANDS = ((0.95, 5), (0.85, 4), (0.70, 3), (0.50, 2))  # 인용이 달린 서술 문장의 비율
-BIAS_MULTI_SOURCE_BANDS = ((0.60, 5), (0.45, 4), (0.30, 3), (0.15, 2))  # 서로 다른 출처 2개 이상을 인용한 판정의 비율
+# 판정 하나의 점수는 인용한 서로 다른 출처의 수로 정하고(1개 3점, 2개 4점, 3개 이상 5점) 항목 점수는 그 평균이다.
+# 출처가 하나뿐인 판정이 많아도 점수가 급락하지 않고 평균 3점에 머문다. 평균이 3.5 이상이면 4점이다.
+SOURCE_COUNT_SCORES = {1: 3, 2: 4}  # 3개 이상은 5점
 COVERAGE_BANDS = ((0.80, 5), (0.65, 4), (0.50, 3), (0.35, 2))  # 24개 항목 중 근거가 확인된 판정의 비율
 # 약한 비교 표현의 개수 → 점수. 첫 replay 보고서에서 논문이 보고한 baseline 비교('…더 나은 정확도를 보인다고 보고한다')와
 # 조건을 붙인 대칭 서술('…조건에서 더 유리하다')이 2건 나왔고 둘 다 우열 서술이 아니었다. 1~2건은 통과시키고 3건부터 감점한다.
 WEAK_COMPARATIVE_BANDS = ((5, 2), (3, 3), (0, 4))  # (하한 개수, 점수): 5건 이상 2점, 3~4건 3점, 그 미만 4점
 STRONG_COMPARATIVE_SCORE = 2  # 강한 비교 표현이 하나라도 있을 때
 UNMARKED_FAILURE_CAP = 3  # 근거 검사에 실패한 판정이 통과한 것처럼 서술됐을 때 Groundedness 상한
+FOOTNOTE_MISMATCH_CAP = 2  # 각주의 기술·인용 구절·출처가 State의 근거와 어긋날 때 Groundedness 상한
 DOMAIN_UNDISCLOSED_CAP = 3  # 도메인 판정의 단일 출처 의존을 한계점에 밝히지 않았을 때 편향 통제 상한
 MAX_SOURCE_SHARE_CAP = (0.60, 3)  # 한 출처가 인용 단위의 이 비율 넘게 차지하면 상한
 EVIDENCE_COUNT_RATIO_CAP = (0.40, 3)  # 기술별 인용 근거 수의 min/max가 이 값 미만이면 상한
@@ -69,6 +72,12 @@ DISCLOSURE_PATTERN = re.compile(r"단일 출처|출처가 하나|출처 하나|�
 META_PATTERN = re.compile(r"이 보고서|본 보고서|검토했다|정리했다|참고해야|참고한다|미확인|확인하지 못|찾지 못|제시하지 않는다|추정이며")
 
 CITATION_TOKEN = re.compile(r"\[([^\[\]]+)\]")
+PAREN_MARKER = re.compile(r"\((\d{1,3}(?:\s*[,，]\s*\d{1,3})*)\)")  # 각주 표시 (1), (1)(2), (1, 2). 네 자리 이상(연도)은 제외
+LEADING_ENUMERATOR = re.compile(r"^\s*\(\d{1,3}\)\s+")  # 문단 맨 앞의 "(1) 항목"은 목록 번호이지 각주 표시가 아니다
+FOOTNOTE_HEADING = "각주"
+FOOTNOTE_SECTIONS = (FOOTNOTE_HEADING, "부록")  # 부록은 각주 이전 형식의 근거 목록 이름
+REFERENCE_LABEL = re.compile(r"\[?\(?(R\d+)\)?\]?")
+SPEAKER_PREFIX = re.compile(r"^발언 주체 .*?: ")
 NUMBER_TOKEN = re.compile(r"\d+(?:\s*[,，]\s*\d+)*")
 ID_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:\-]*")
 IGNORED_TOKEN = re.compile(r"REDACTED|R\d+")  # 가려진 값, 부록·REFERENCE의 출처 라벨
@@ -216,6 +225,10 @@ class Parsed:
     perspective_sections: dict[str, str] = field(default_factory=dict)
     limitations: str = ""
     empty: bool = False
+    citation_map: dict[str, str] = field(default_factory=dict)
+    footnote_heading: str = ""  # 각주 절의 제목. 보고서에 각주 절이 없으면 빈 문자열
+    footnotes: dict[str, dict[str, str]] = field(default_factory=dict)  # 번호 → {열 이름: 칸}
+    references: dict[str, str] = field(default_factory=dict)  # REFERENCE 라벨(R1) → 항목 전체
 
 
 def _norm(text: str) -> str:
@@ -223,8 +236,8 @@ def _norm(text: str) -> str:
 
 
 def _plain(text: str) -> str:
-    """인용 표기를 지우고 그 자리의 공백도 정리한 글(Judge 인용문 대조용)."""
-    return _norm(re.sub(r"\s+([.,;:)])", r"\1", CITATION_TOKEN.sub("", text or "")))
+    """인용 표기(``[1]``, ``(1)``)를 지우고 그 자리의 공백도 정리한 글(Judge 인용문 대조용)."""
+    return _norm(re.sub(r"\s+([.,;:)])", r"\1", PAREN_MARKER.sub("", CITATION_TOKEN.sub("", text or ""))))
 
 
 def _clip(text: Any, limit: int = QUOTE_LIMIT) -> str:
@@ -239,30 +252,42 @@ def band_score(value: float, bands: tuple[tuple[float, int], ...]) -> int:
     return 1
 
 
-def resolve_citations(text: str, citation_map: Mapping[str, str], evidence: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+def resolve_citations(
+    text: str, citation_map: Mapping[str, str], evidence: Mapping[str, Any], *, parens: bool = False
+) -> tuple[list[str], list[str]]:
     """문장 안의 인용을 근거 ID로 바꾼다. 반환은 (존재하는 근거 ID, 존재하지 않는 인용).
 
-    ``[1]``은 ``citation_map``이 있으면 번호로, 없으면 근거 ID 그대로 읽는다. ``[상충]``처럼 근거 ID 모양이
-    아닌 대괄호와 ``[REDACTED]``, ``[R1]`` 같은 라벨은 인용으로 보지 않는다.
+    인용 표시는 세 가지를 읽는다. 각주 표시 ``(1)``, ``(1)(2)``, ``(1, 2)``(``parens=True``이고 ``citation_map``이 있을 때만,
+    문단 맨 앞의 ``(1) 항목``은 목록 번호라서 제외), 번호 ``[1]``(``citation_map``이 있을 때), 근거 ID ``[근거 ID]``.
+    ``[상충]``처럼 근거 ID 모양이 아닌 대괄호와 ``[REDACTED]``, ``[R1]`` 같은 라벨은 인용으로 보지 않는다.
     """
     ids: list[str] = []
     unknown: list[str] = []
+
+    def add_number(number: str, label: str) -> None:
+        evidence_id = citation_map.get(number)
+        if evidence_id in evidence:
+            ids.append(evidence_id)
+        else:
+            unknown.append(label)
+
     for token in CITATION_TOKEN.findall(text or ""):
         token = token.strip()
         if IGNORED_TOKEN.fullmatch(token):
             continue
         if citation_map and NUMBER_TOKEN.fullmatch(token):
             for number in re.findall(r"\d+", token):
-                evidence_id = citation_map.get(number)
-                if evidence_id in evidence:
-                    ids.append(evidence_id)
-                else:
-                    unknown.append(f"[{number}]")
+                add_number(number, f"[{number}]")
         elif ID_TOKEN.fullmatch(token):
             if token in evidence:
                 ids.append(token)
             else:
                 unknown.append(f"[{token}]")
+    if parens and citation_map:
+        body = LEADING_ENUMERATOR.sub("", text or "", count=1)
+        for group in PAREN_MARKER.findall(body):
+            for number in re.findall(r"\d+", group):
+                add_number(number, f"({number})")
     return list(dict.fromkeys(ids)), unknown
 
 
@@ -289,23 +314,54 @@ def _leading_technology(paragraph: str, technologies: list[str]) -> str:
     return min(found)[1] if found else ""
 
 
+def _read_footnotes(section: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """각주 표를 ``{번호: {열 이름: 칸}}``으로 읽는다. 번호 칸은 ``(3)``·``[3]``·``3``을 모두 받는다."""
+    table = section.get("table") or {}
+    columns = [str(column) for column in (table.get("columns") or [])]
+    found: dict[str, dict[str, str]] = {}
+    for row in table.get("rows") or []:
+        cells = {column: str(row[index]) if index < len(row) else "" for index, column in enumerate(columns)}
+        number = re.sub(r"\D", "", cells.get(columns[0], "")) if columns else ""
+        if number:
+            found[number] = cells
+    return found
+
+
+def _read_references(section: Mapping[str, Any]) -> dict[str, str]:
+    """REFERENCE 절을 ``{라벨(R1): 항목 전체}``로 읽는다."""
+    found: dict[str, str] = {}
+    for paragraph in section.get("paragraphs") or []:
+        match = REFERENCE_LABEL.match(str(paragraph).strip())
+        if match:
+            found[match.group(1)] = str(paragraph)
+    return found
+
+
 def parse_report(report: Mapping[str, Any], technologies: list[str], evidence: Mapping[str, Any]) -> Parsed:
     """``report["sections"]``를 문장·표 행 단위로 읽는다.
 
     Groundedness의 분모(서술 문장)에서 빼는 것:
-      - 1·2장(정적 배경·기술 선정), 4장 개요와 4.x 첫 문단(관점 소개), 6장 한계점, 부록, REFERENCE
+      - 1·2장(정적 배경·기술 선정), 4장 개요와 4.x 첫 문단(관점 소개), 6장 한계점, 각주, REFERENCE
       - 보고서 자신을 설명하는 문장(META_PATTERN)이나 기술 이름이 없는 문장
       - '(근거 미확인)'이 붙었거나 미확인·보고 없음 라벨인 판정 행(보고서가 이미 근거 없음을 밝힌 것)
     문단 끝에 모아 단 인용은 그 앞의 인용 없는 문장을 덮는다. 3장은 기술별 인용이 한 문단에만 있어도 같은 기술의
     다른 문단을 덮는다(기술 조사 결과의 근거 ID가 문단이 아니라 기술 단위로 기록되기 때문이다).
+    각주 표시 ``(n)``는 요약·3·4·5장에서만 인용으로 읽는다(6장 등의 ``(1) …`` 열거와 구분). 각주 절과 REFERENCE 절은 본문이
+    아니라 검증 대상으로 따로 읽는다(``parsed.footnotes``, ``parsed.references``).
     """
     parsed = Parsed()
     citation_map = {str(key): str(value) for key, value in (report.get("citation_map") or {}).items()}
     sections = [section for section in (report.get("sections") or []) if isinstance(section, Mapping)]
     parsed.empty = not sections
+    parsed.citation_map = citation_map
     for section in sections:
         heading = _norm(section.get("heading"))
-        if heading.startswith(("REFERENCE", "부록")):
+        if heading.startswith(FOOTNOTE_SECTIONS):
+            parsed.footnote_heading = heading
+            parsed.footnotes = _read_footnotes(section)
+            continue
+        if heading.startswith("REFERENCE"):
+            parsed.references = _read_references(section)
             continue
         in_claims = heading == "SUMMARY" or heading.startswith("3.") or heading.startswith("5.") or bool(re.match(r"4\.\d", heading))
         perspective_match = re.match(r"4\.(\d)", heading)
@@ -329,7 +385,7 @@ def parse_report(report: Mapping[str, Any], technologies: list[str], evidence: M
             sentences = split_sentences(paragraph)
             built: list[Unit] = []
             for sentence in sentences:
-                ids, unknown = resolve_citations(sentence, citation_map, evidence)
+                ids, unknown = resolve_citations(sentence, citation_map, evidence, parens=in_claims)
                 parsed.texts.append(Text(heading, f"문단 {number}", sentence))
                 unit = Unit(heading, f"문단 {number}", sentence, "sentence", ids, unknown)
                 built.append(unit)
@@ -367,7 +423,7 @@ def parse_report(report: Mapping[str, Any], technologies: list[str], evidence: M
             for column, cell in cells.items():
                 if _norm(cell):
                     parsed.texts.append(Text(heading, f"표 {row_no}행 {column}", cell))
-            ids, unknown = resolve_citations(" ".join(cells.values()), citation_map, evidence)
+            ids, unknown = resolve_citations(" ".join(cells.values()), citation_map, evidence, parens=in_claims)
             for token in unknown:
                 parsed.unknown.append((heading, " | ".join(cells.values()), token))
             if ids:
@@ -380,7 +436,7 @@ def parse_report(report: Mapping[str, Any], technologies: list[str], evidence: M
             field_key = next((key for key, title in FIELD_TITLES.items() if title == _norm(cells.get("항목", ""))), None)
             if field_key is None:
                 continue
-            ids_cell, unknown_cell = resolve_citations(cells.get("근거", ""), citation_map, evidence)
+            ids_cell, unknown_cell = resolve_citations(cells.get("근거", ""), citation_map, evidence, parens=in_claims)
             parsed.rows.append(Row(heading, perspective, _norm(cells.get("기술", "")), field_key, label, marked, ids_cell, unknown_cell, row_no, cells))
             if in_claims and not marked and label not in NOT_FOUND_LABELS:
                 text = " | ".join(str(cells.get(column, "")) for column in columns if column != "근거")
@@ -471,6 +527,60 @@ def _question(technology: str, perspective: str, field_key: str) -> str:
     return f"{technology}의 {PERSPECTIVE_TITLES[perspective]} 관점 '{FIELD_TITLES[field_key]}' 판정을 뒷받침하는 원문 근거는 무엇인가?"
 
 
+def footnote_findings(parsed: Parsed, ctx: _Context) -> list[dict[str, str]]:
+    """본문의 각주 표시가 각주 절의 근거·출처에 제대로 이어지는지 확인한다(번호 인용 형식일 때만).
+
+    ``severity``가 ``missing``이면 따라갈 수 없는 인용(각주 없음, 출처 미등록, REFERENCE 항목 없음)이고,
+    ``mismatch``이면 각주의 기술·인용 구절·출처가 State의 근거와 어긋난 것이다.
+    인용 구절 칸이 비어 있으면(길이 제한으로 줄인 판) 구절 대조는 건너뛴다.
+    """
+    if not parsed.citation_map:
+        return []
+    inverse = {evidence_id: number for number, evidence_id in parsed.citation_map.items()}
+    cited = sorted({inverse[identifier] for ids in parsed.cited for identifier in ids if identifier in inverse}, key=int)
+    heading = parsed.footnote_heading or FOOTNOTE_HEADING
+    if cited and not parsed.footnotes:
+        return [
+            {
+                "severity": "missing",
+                "section": heading,
+                "problem": f"본문에 각주 표시 {len(cited)}개가 있는데 각주 절이 없음",
+                "quote": "",
+                "fix": "각주 절을 만들어 각 번호의 근거와 출처를 적음",
+            }
+        ]
+    findings: list[dict[str, str]] = []
+
+    def add(severity: str, number: str, problem: str, quote: str, fix: str) -> None:
+        findings.append({"severity": severity, "section": heading, "problem": f"({number}) {problem}", "quote": quote, "fix": fix})
+
+    for number in cited:
+        row = parsed.footnotes.get(number)
+        item = ctx.evidence.get(parsed.citation_map[number]) or {}
+        if row is None:
+            add("missing", number, "본문에서 인용했지만 각주가 없음", "", "각주 절에 이 번호의 근거와 출처를 추가")
+            continue
+        technology = _norm(row.get("기술", ""))
+        if technology and item.get("technology") and technology != item["technology"]:
+            add("mismatch", number, f"각주의 기술({technology})이 근거의 기술({item['technology']})과 다름", row.get("기술", ""), "각주를 근거 기록에 맞게 다시 만듦")
+        source_cell = row.get("출처", "")
+        label = REFERENCE_LABEL.search(source_cell)
+        if "미등록" in source_cell or not label:
+            add("missing", number, "각주에 출처가 없거나 미등록으로 표시됨", source_cell, "근거의 출처를 REFERENCE에 등록하고 각주에 라벨을 적음")
+        elif label.group(1) not in parsed.references:
+            add("missing", number, f"각주의 출처 {label.group(1)}가 REFERENCE에 없음", source_cell, "REFERENCE에 해당 출처를 추가")
+        else:
+            record = ctx.sources.get(item.get("source_id")) or {}
+            markers = [str(record[key]) for key in ("url", "title") if record.get(key)]
+            if markers and not any(marker in parsed.references[label.group(1)] for marker in markers):
+                add("mismatch", number, f"각주의 출처 {label.group(1)}가 근거의 출처와 다름", source_cell, "각주의 출처 라벨을 근거의 출처에 맞게 고침")
+        quote_cell = _norm(SPEAKER_PREFIX.sub("", _norm(row.get("인용 구절", "")))).rstrip("…").strip()
+        original = _norm(item.get("quote") or item.get("claim") or "")
+        if quote_cell and original and quote_cell[:30] not in original:
+            add("mismatch", number, "각주의 인용 구절이 근거의 원문과 다름", row.get("인용 구절", ""), "각주의 인용 구절을 근거의 원문으로 바로잡음")
+    return findings
+
+
 def groundedness_rule(parsed: Parsed, ctx: _Context) -> Rule:
     rule = Rule()
     claims = [unit for unit in parsed.units if unit.claim]
@@ -478,12 +588,14 @@ def groundedness_rule(parsed: Parsed, ctx: _Context) -> Rule:
     ratio = len(covered) / len(claims) if claims else 1.0
     rule.score = band_score(ratio, GROUNDEDNESS_BANDS)
     unmarked = _unmarked_failures(parsed, ctx)
+    footnotes = footnote_findings(parsed, ctx)
     rule.measurements = {
         "claim_units": len(claims),
         "cited_units": len(covered),
         "cited_ratio": round(ratio, 3),
         "unknown_citations": len(parsed.unknown),
         "unmarked_failures": len(unmarked),
+        "footnote_problems": len(footnotes),
     }
     if len(covered) < len(claims):
         rule.reasons.append(f"인용이 닿지 않는 서술 {len(claims) - len(covered)}개/{len(claims)}개 (인용 비율 {ratio:.0%})")
@@ -504,6 +616,15 @@ def groundedness_rule(parsed: Parsed, ctx: _Context) -> Rule:
             rule.instructions.insert(
                 0, _instruction("groundedness", section, f"존재하지 않는 근거를 인용함({token})", sentence, "인용을 실제 근거로 바로잡거나 문장을 삭제")
             )
+    if footnotes:
+        untraceable = [item for item in footnotes if item["severity"] == "missing"]
+        if untraceable:
+            rule.score = 1  # 따라갈 수 없는 인용(각주·출처 없음)은 존재하지 않는 근거 인용과 같게 본다
+        else:
+            rule.cap(FOOTNOTE_MISMATCH_CAP)
+        rule.reasons.append(f"각주·출처 확인 실패 {len(footnotes)}건 (따라갈 수 없는 인용 {len(untraceable)}건): " + "; ".join(item["problem"] for item in footnotes[:3]))
+        for item in footnotes:
+            rule.instructions.insert(0, _instruction("groundedness", item["section"], item["problem"], item["quote"], item["fix"]))
     if unmarked:
         rule.cap(UNMARKED_FAILURE_CAP)
         rule.reasons.append(f"근거 검사를 통과하지 못한 판정 {len(unmarked)}개가 '(근거 미확인)' 표시 없이 서술됨")
@@ -593,28 +714,35 @@ def bias_rule(parsed: Parsed, ctx: _Context) -> Rule:
     rule = Rule()
     passing = [judgment for judgment in ctx.judgments if judgment["ok"]]
     disclosed = bool(DISCLOSURE_PATTERN.search(parsed.limitations))
-    multi = measured = 0
+    scores: list[int] = []
+    histogram = {"1": 0, "2": 0, "3+": 0}
     singles: list[dict[str, Any]] = []
     undisclosed_domain: list[dict[str, Any]] = []
     for judgment in passing:
-        sources = {ctx.source_key(identifier) for identifier in judgment["ids"]}
-        if len(sources) >= 2:
-            multi += 1
-            measured += 1
-            continue
-        if judgment["perspective"] == "domain":
+        count = len({ctx.source_key(identifier) for identifier in judgment["ids"]})
+        if count == 1 and judgment["perspective"] == "domain":
             # 도메인 판정은 기술별로 자기 논문 한 편이 주 출처인 것이 구조적으로 정상이다.
-            # 한계점에 밝혔으면 비율 계산에서 빼고(감점도 가점도 없다), 밝히지 않았으면 단일 출처로 센다.
+            # 한계점에 밝혔으면 평균에서 빼고(감점도 가점도 없다), 밝히지 않았으면 단일 출처로 센다.
             if disclosed:
                 continue
             undisclosed_domain.append(judgment)
-        singles.append(judgment)
-        measured += 1
-    ratio = multi / measured if measured else (1.0 if passing else 0.0)
-    rule.score = band_score(ratio, BIAS_MULTI_SOURCE_BANDS)
-    rule.measurements = {"passing_judgments": len(passing), "measured_judgments": measured, "multi_source_ratio": round(ratio, 3), "domain_disclosed": disclosed}
-    if measured and ratio < BIAS_MULTI_SOURCE_BANDS[0][0]:
-        rule.reasons.append(f"서로 다른 출처 2개 이상을 인용한 판정 {multi}개/{measured}개 ({ratio:.0%})")
+        if count == 1:
+            singles.append(judgment)
+        scores.append(SOURCE_COUNT_SCORES.get(count, 5 if count >= 3 else 1))
+        histogram["3+" if count >= 3 else str(count)] += 1
+    mean = sum(scores) / len(scores) if scores else (5.0 if passing else 1.0)
+    rule.score = max(1, min(5, int(mean + 0.5)))  # 반올림(3.5는 4점)
+    rule.measurements = {
+        "passing_judgments": len(passing),
+        "measured_judgments": len(scores),
+        "mean_source_score": round(mean, 2),
+        "judgments_by_source_count": histogram,
+        "domain_disclosed": disclosed,
+    }
+    if scores and mean < 5:
+        rule.reasons.append(
+            f"판정 {len(scores)}개의 출처 수별 점수 평균 {mean:.1f}점 (출처 1개 {histogram['1']}개, 2개 {histogram['2']}개, 3개 이상 {histogram['3+']}개)"
+        )
     if not passing:
         rule.reasons.append("근거 검사를 통과한 판정이 없어 출처 다양성을 확인할 수 없음")
     non_domain_singles = [judgment for judgment in singles if judgment["perspective"] != "domain"]
