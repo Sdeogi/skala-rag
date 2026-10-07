@@ -122,3 +122,23 @@
 **충돌 시 지켜야 할 것**: `attempt`의 하한을 다시 1로 올리면 C의 재수집 요청이 버려진다.
 
 **확인**: `pytest -q tests/test_schemas.py` 12 passed
+
+## 2026-10-07 17:20 · sup/graph · San Kim
+
+**무엇을**: 통합 브랜치(D의 보고서 변경 4건) 병합, `app.py`에 품질 평가기 조립, LangSmith 추적 확인
+
+**왜**: 품질 평가 노드가 임시 통과 평가기만 쓰고 있었다. C의 `QualityEvaluator`가 통합 브랜치에 들어오면 코드 변경 없이 바로 쓰이도록 조립해 두고, 아직 없으면 임시 평가기로 돌아가게 한다. live면 LLM Judge를 넣고 replay·fixture면 규칙 검사만 하도록 모드에 따라 `judge_model`을 정한다.
+
+**바꾼 파일**:
+- `app.py` — 추가 `_quality_evaluator(mode, model_id)`: `skala_rag.agents.quality.QualityEvaluator`를 import할 수 있으면 live 모드에서만 `ChatOpenAI(model=model_id)`를 judge로 넣어 만들고, 모듈이 없으면(`ImportError`) `None`을 돌려 그래프의 임시 평가기를 쓴다. `main`: `services.quality_evaluator`가 비어 있을 때만 이 값을 넣는다.
+- 병합 커밋: `origin/supervisor`(D의 PR 10·11·15·16) → `sup/graph`. 충돌 없음, 버린 변경 없음.
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음. `--services`로 들어온 factory가 `quality_evaluator`를 직접 넣으면 그대로 쓴다.
+
+**충돌 시 지켜야 할 것**:
+- `_quality_evaluator`의 `ImportError` 분기를 지우면 C 모듈이 없는 환경에서 `app.py`가 시작조차 못 한다.
+- `services.quality_evaluator is None`일 때만 넣는 조건을 지우면 factory가 넣은 평가기를 덮어쓴다.
+
+**확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 104 passed. C의 `quality.py`를 임시로 두고 fixture 실행 → `complete`, Supervisor 결정 15회(재수집 2회 뒤 `accept_with_limits`), 품질 노드 실행 확인. 추적을 켠 fixture 실행이 LangSmith 프로젝트에 `skala-rag-replay`(tags `skala-rag`, `replay`, `fixture`, metadata `run_id`)로 올라갔고 트레이스에 `supervisor` 6회·관점 4개·`quality` 1회가 보임.

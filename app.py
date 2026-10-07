@@ -44,6 +44,25 @@ def _load_services(spec: str) -> PipelineServices:
     return services
 
 
+def _quality_evaluator(mode: str, model_id: str):
+    """Quality node evaluator: the real one when its module is present, else the graph's placeholder.
+
+    Live runs give it an LLM judge; replay and fixture runs stay rule-only so the
+    same input always yields the same verdict.
+    """
+    try:
+        from skala_rag.agents.quality import QualityEvaluator
+    except ImportError:  # the quality branch is not merged yet; the graph falls back to always-pass
+        return None
+    judge_model = None
+    if mode == "live":
+        from langchain_openai import ChatOpenAI
+
+        # The judge is a separate call from generation, so it gets its own model instance.
+        judge_model = ChatOpenAI(model=model_id)
+    return QualityEvaluator(judge_model=judge_model)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="KV cache 다관점 RAG 그래프 실행")
     parser.add_argument("--mode", choices=("live", "replay"), help="live: 외부 검색과 LLM 사용, replay: 저장된 자료 재생")
@@ -137,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             services.synthesis_writer = None
             services.report_writer = None
+        if services.quality_evaluator is None:
+            services.quality_evaluator = _quality_evaluator(args.mode, model_id)
         if review_enabled:
             if services.semantic_review is None:
                 from langchain_openai import ChatOpenAI
