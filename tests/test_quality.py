@@ -702,3 +702,10 @@ def test_judge_quotes_without_citation_numbers_are_still_found():
     sentence = next(text.text for text in parsed.texts if re.search(r"\[\d+\]", text.text) and text.where.startswith("문단"))
     quote = re.sub(r"\s*\[\d+\]", "", sentence)  # Judge가 인용 번호를 빼고 옮긴 문장
     assert "[" not in quote and QualityEvaluator()._locate(quote, parsed).text == sentence
+
+
+def test_paper_notation_in_brackets_is_not_read_as_a_citation():
+    evidence = {"KIVI-p3-12": {}, "e1": {}}
+    citation_map = {"1": "KIVI-p3-12"}
+    assert resolve_citations("슬라이스 X[l-r:]와 [i:j], [n], [k] 표기를 쓴다 [1].", citation_map, evidence) == (["KIVI-p3-12"], [])
+    assert resolve_citations("근거 [e1]과 없는 근거 [ghost-evidence], [KIVI-p9-99].", citation_map, evidence) == (["e1"], ["[ghost-evidence]", "[KIVI-p9-99]"])

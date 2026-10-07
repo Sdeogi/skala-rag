@@ -351,7 +351,12 @@ def supervise(state: GraphState, semantic_review: SemanticReview | None = None) 
     if previous == ["quality"]:
         action = str(quality.get("action") or ("pass" if quality.get("passed", True) else "rewrite_report"))
         threshold = int(quality.get("threshold") or QUALITY_THRESHOLD)
-        below = [name for name, item in (quality.get("items") or {}).items() if isinstance(item, Mapping) and int(item.get("score") or 0) < threshold]
+        # An item may carry its own pass line (bias control passes at 3).
+        below = [
+            name
+            for name, item in (quality.get("items") or {}).items()
+            if isinstance(item, Mapping) and int(item.get("score") or 0) < int(item.get("threshold") or threshold)
+        ]
         summary = ", ".join(below) or "미달 항목 없음"
         if action == "pass":
             return decide(["save"], "save", f"품질 평가 통과(기준 {threshold}점) → 저장")
@@ -369,6 +374,18 @@ def supervise(state: GraphState, semantic_review: SemanticReview | None = None) 
             wanted = list(dict.fromkeys(str(item.get("perspective")) for item in requests))
             viable = [name for name in wanted if name in PERSPECTIVES and statuses[name]["attempts"] < MAX_REWORK_PER_AGENT]
             exhausted = [name for name in wanted if name in PERSPECTIVES and name not in viable]
+            rewritable = [item for item in (quality.get("instructions") or []) if isinstance(item, Mapping)]
+            if not viable and rewritable and quality_attempts < MAX_QUALITY_LOOPS:
+                # Nothing can be collected again, but the evaluation also pointed at sentences: rewrite those.
+                quality["action"] = "rewrite_report"
+                update["quality_result"] = quality
+                update["quality_attempts"] = quality_attempts + 1
+                return decide(
+                    ["report"],
+                    "rewrite_report",
+                    f"품질 미달({summary}), 재수집 요청({', '.join(_title(n) for n in wanted) or '없음'})은 재작업 횟수가 남아 있지 않아 불가 → "
+                    f"지적된 문장 {len(rewritable)}건을 고쳐 쓰는 보고서 재작성 {quality_attempts + 1}회차",
+                )
             if quality_attempts >= MAX_QUALITY_LOOPS or not viable:
                 quality["action"] = "accept_with_limits"
                 update["quality_result"] = quality

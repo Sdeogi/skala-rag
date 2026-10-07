@@ -81,6 +81,7 @@ EXTRACTION_SYSTEM_PROMPT = """\
    말고, 아예 claim으로 만들지 마세요.
 6. 각 주장(claim)은 반드시 그 근거가 된 청크의 evidence_id를 정확히 인용해야 합니다.
    목록에 없는 evidence_id를 만들어내면 안 됩니다.
+8. 수식은 LaTeX(\\(…\\), \\tilde 등)나 변수 기호로 쓰지 말고 한국어 문장으로 풀어 쓰세요. 보고서에 그대로 실립니다.
 7. 각 주장에 claim_type을 붙이세요:
    - reported_fact: 발췌문이 직접 진술한 사실
    - inference: 발췌문 여러 개를 종합해 에이전트가 추론한 내용

@@ -635,6 +635,12 @@ def make_technical(settings: IntegrationSettings, branches: _Branches):
                 "performance": [str(claim) for claim in (performance.get("claims") or [])],
                 "limitations": [str(claim) for claim in (limitations.get("claims") or [])],
                 "evidence_ids": list(dict.fromkeys(ids)),
+                "evidence_by_category": {
+                    "principle": list(principle.get("evidence_ids") or []),
+                    "experiment_conditions": list(setup.get("evidence_ids") or []),
+                    "performance": list(performance.get("evidence_ids") or []),
+                    "limitations": list(limitations.get("evidence_ids") or []),
+                },
             }
         errors = {
             f"technical-{index}": {

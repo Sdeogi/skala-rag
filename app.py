@@ -26,7 +26,7 @@ if os.environ.get("RAG_DISABLE_DOTENV") != "1":  # tests set this so a local .en
     load_dotenv()
 
 from skala_rag.agents.report import save_outputs  # noqa: E402
-from skala_rag.config import DEFAULT_MODEL_ID, load_settings, missing_settings  # noqa: E402
+from skala_rag.config import DEFAULT_FETCH_MAX, DEFAULT_MODEL_ID, DEFAULT_WEB_SEARCH_MAX, load_settings, missing_settings  # noqa: E402
 from skala_rag.graph.workflow import PipelineServices, build_graph, draw_mermaid, initial_state  # noqa: E402
 
 
@@ -75,8 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--technologies", nargs=2, metavar=("SW_TECH", "HW_TECH"), default=("KIVI", "InfiniGen"))
     parser.add_argument("--domain", default="클라우드 LLM 서빙")
     parser.add_argument("--as-of", default=None, help="평가 기준일 YYYY-MM-DD (기본: 오늘)")
-    parser.add_argument("--web-search-max", type=int, default=20, help="실행당 웹 검색 상한")
-    parser.add_argument("--fetch-max", type=int, default=30, help="실행당 원문 조회 상한")
+    parser.add_argument("--web-search-max", type=int, default=DEFAULT_WEB_SEARCH_MAX, help="실행당 웹 검색 상한")
+    parser.add_argument("--fetch-max", type=int, default=DEFAULT_FETCH_MAX, help="실행당 원문 조회 상한")
     parser.add_argument("--tool-timeout", type=int, default=20, help="도구별 시간 제한(초)")
     parser.add_argument("--tool-retries", type=int, default=2, help="도구 재시도 횟수")
     parser.add_argument("--max-paper-pages", type=int, default=200, help="RAG 문서 총 페이지 상한")

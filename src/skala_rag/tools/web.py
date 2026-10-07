@@ -342,8 +342,13 @@ def get_source(
 
 
 def _call_summary_model(raw: str, question: str, topic: str, model_name: str) -> Any:
-    from langchain.agents import create_agent
-    from langchain.agents.structured_output import ToolStrategy
+    """Extract one evidence candidate as ``WebEvidenceSummary``.
+
+    Uses the model's structured output (``with_structured_output``), the same way
+    every other LLM caller in this project does. A function-tool based agent is
+    not used here: reasoning models reject function tools on the chat completions
+    API ("Function tools with reasoning_effort are not supported").
+    """
     from langchain.chat_models import init_chat_model
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -354,31 +359,22 @@ def _call_summary_model(raw: str, question: str, topic: str, model_name: str) ->
         timeout=20,
         max_retries=0,
     )
-    agent = create_agent(
-        model=model,
-        tools=[],
-        system_prompt=SUMMARY_PROMPT,
-        response_format=ToolStrategy(WebEvidenceSummary, handle_errors=False),
+    return model.with_structured_output(WebEvidenceSummary).invoke(
+        [
+            {"role": "system", "content": SUMMARY_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "topic": topic,
+                        "question": question,
+                        "untrusted_source_text": raw,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
     )
-    result = agent.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "topic": topic,
-                            "question": question,
-                            "untrusted_source_text": raw,
-                        },
-                        ensure_ascii=False,
-                    ),
-                }
-            ]
-        },
-        config={"recursion_limit": 4},
-    )
-    return result["structured_response"]
 
 
 def _contains_normalized(raw: str, value: str) -> bool:

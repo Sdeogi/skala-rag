@@ -44,7 +44,7 @@ def quality_evaluator(*verdicts):
                 "threshold": 4,
                 "items": items,
                 "action": action,
-                "instructions": [{"item": name, "section": "5. 시사점", "problem": "fixture", "fix": "fixture"} for name in failing],
+                "instructions": verdict.get("instructions", [{"item": name, "section": "5. 시사점", "problem": "fixture", "fix": "fixture"} for name in failing]),
                 "rework_requests": verdict.get("rework_requests", []),
             }
         }
@@ -282,12 +282,25 @@ def test_quality_recollect_reinvokes_only_the_named_perspective(tmp_path):
 
 def test_quality_recollect_without_remaining_attempts_accepts_with_limits(tmp_path):
     services = make_services(missing=True)  # market exhausts its rework budget during the evidence phase
-    services.quality_evaluator = quality_evaluator(recollect("market"))
+    services.quality_evaluator = quality_evaluator({**recollect("market"), "instructions": []})  # nothing to rewrite either
     result = run(services, tmp_path)
     assert decisions(result)[-3:] == ["quality", "accept_with_limits", "save"]
     assert "재작업 횟수가 남아 있지 않음" in result["decision_log"][-2]["reason"]
     assert result["agent_status"]["market"]["attempts"] == MAX_REWORK_PER_AGENT and result["quality_attempts"] == 0
     assert result["quality_result"]["action"] == "accept_with_limits"
+
+
+def test_quality_recollect_without_remaining_attempts_rewrites_the_flagged_sentences_first(tmp_path):
+    """Collection is exhausted, but the evaluation also flagged sentences: the report is rewritten before giving up."""
+    services = make_services(missing=True)  # market exhausts its rework budget during the evidence phase
+    services.quality_evaluator = quality_evaluator(recollect("market"), recollect("market"), recollect("market"))
+    result = run(services, tmp_path)
+    assert decisions(result)[-7:] == ["quality", "rewrite_report", "quality", "rewrite_report", "quality", "accept_with_limits", "save"]
+    rewrites = [entry for entry in result["decision_log"] if entry["decision"] == "rewrite_report"]
+    assert len(rewrites) == MAX_QUALITY_LOOPS and "재작업 횟수가 남아 있지 않아 불가" in rewrites[0]["reason"] and "고쳐 쓰는 보고서 재작성 1회차" in rewrites[0]["reason"]
+    assert result["quality_attempts"] == MAX_QUALITY_LOOPS and result["agent_status"]["market"]["attempts"] == MAX_REWORK_PER_AGENT
+    assert result["quality_result"]["action"] == "accept_with_limits" and len(services.quality_evaluator.calls) == 3
+    assert result["step_count"] <= MAX_SUPERVISOR_STEPS
 
 
 def test_invalid_quality_result_is_recorded_and_report_is_saved(tmp_path):

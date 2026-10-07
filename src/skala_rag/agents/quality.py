@@ -60,7 +60,7 @@ MAX_INSTRUCTIONS = 10
 # Groundedness Judge 점수와 수정 지시에 반영하는 장(묶음 키). 보고서 작성기가 직접 쓰는 SUMMARY와 5장이다.
 # 3장(기술 조사 결과를 그대로 옮김)과 4장(판정 표, 판정마다 근거 검사의 검토 LLM을 이미 통과)은 작성기가 고칠 수 없어
 # 재작성 요청이 헛돌므로, Judge는 호출하되 지적을 점수와 수정 지시 없이 reasons에 참고로만 남긴다.
-JUDGE_SCORED_CHAPTERS = ("SUMMARY", "5")
+JUDGE_SCORED_CHAPTERS = ("SUMMARY", "5")  # 3장은 작성 LLM이 썼을 때만 더한다(_Context.scored_chapters)
 MAX_UNITS_PER_CALL = 14  # Groundedness Judge 호출 하나가 보는 문장·행 수
 EVIDENCE_PER_UNIT = 4
 QUOTE_LIMIT = 300
@@ -76,7 +76,9 @@ WEAK_COMPARATIVE = re.compile(r"유리하다|유리한|권장|더 (?:좋|뛰어|
 NEGATION = re.compile(r"않|없|아니|대신|금지|말아|지양|배제|피한|피하|제외|만들지|두지|쓰지|못한")
 DISCLOSURE_PATTERN = re.compile(r"단일 출처|출처가 하나|출처 하나|한 편의 논문|논문 한 편|단일 논문|하나의 논문|논문 1편")
 # 보고서 자신을 설명하는 문장(판정이 아님)은 인용이 없어도 감점하지 않는다.
-META_PATTERN = re.compile(r"이 보고서|본 보고서|검토했다|정리했다|참고해야|참고한다|미확인|확인하지 못|찾지 못|제시하지 않는다|추정이며")
+META_PATTERN = re.compile(r"이 보고서|본 보고서|검토했다|정리했다|참고해야|참고한다|미확인|확인하지 못|찾지 못|제시하지 않는다|추정이며"
+    # 적용 전에 무엇을 더 확인해야 하는지를 말하는 문장은 사실 주장이 아니다(인용이 필요 없고 Judge 대상도 아니다)
+    r"|확인해야|검증해야|점검해야|확인이 필요|검증이 필요|확인할 필요|검증할 필요")
 
 CITATION_TOKEN = re.compile(r"\[([^\[\]]+)\]")
 PAREN_MARKER = re.compile(r"\((\d{1,3}(?:\s*[,，]\s*\d{1,3})*)\)")  # 각주 표시 (1), (1)(2), (1, 2). 네 자리 이상(연도)은 제외
@@ -92,6 +94,9 @@ REFERENCE_LABEL = re.compile(r"\[?\(?(R\d+)\)?\]?")
 SPEAKER_PREFIX = re.compile(r"^발언 주체 .*?: ")
 NUMBER_TOKEN = re.compile(r"\d+(?:\s*[,，]\s*\d+)*")
 ID_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:\-]*")
+# State에 없는 토큰을 "존재하지 않는 인용"으로 볼지 정하는 모양: 글자를 포함하고 3자 이상이며 영숫자로 끝나고 ``:``가 없다
+# (실제 근거 ID는 ``KIVI-p3-12``, ``web-evidence-…`` 형태). 논문 표기에서 온 ``[l-r:]``, ``[i:j]``, ``[n]`` 같은 슬라이스·변수는 인용이 아니다.
+UNKNOWN_ID_SHAPE = re.compile(r"(?=[A-Za-z0-9_.\-]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9_.\-]+[A-Za-z0-9]")
 IGNORED_TOKEN = re.compile(r"REDACTED|R\d+")  # 가려진 값, 부록·REFERENCE의 출처 라벨
 SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
 LEADING_CITATIONS = re.compile(r"^((?:\[(?:\d+(?:\s*[,，]\s*\d+)*|[A-Za-z0-9][A-Za-z0-9_.:\-]*)\]\s*)+)(\S.*)$")
@@ -307,7 +312,7 @@ def resolve_citations(
         elif ID_TOKEN.fullmatch(token):
             if token in evidence:
                 ids.append(token)
-            else:
+            elif UNKNOWN_ID_SHAPE.fullmatch(token) or (not citation_map and token.isdigit()):  # 번호 대응표가 없는 보고서의 [99]는 없는 근거
                 unknown.append(f"[{token}]")
     if parens and citation_map:
         body = PAREN_RANGE.sub(take_range, LEADING_ENUMERATOR.sub("", scan, count=1))
@@ -513,6 +518,9 @@ class _Context:
         self.checked = isinstance(check.get("items"), list) and bool(check.get("items"))
         self.check_items = {(item.get("perspective"), item.get("technology"), item.get("field")): item for item in check.get("items") or []}
         self.judgments = self._judgments(state)
+        # 작성 LLM이 쓴 장만 Groundedness Judge 점수에 넣는다. 3장은 보고서가 "LLM이 썼다"고 표시했을 때만 해당한다.
+        written = ((state.get("report") or {}).get("llm_sections") or {}).get("overview")
+        self.scored_chapters = JUDGE_SCORED_CHAPTERS + (("3",) if written else ())
 
     def _judgments(self, state: Mapping[str, Any]) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
@@ -1145,7 +1153,7 @@ class QualityEvaluator:
         batches = [
             (key, units[start : start + MAX_UNITS_PER_CALL]) for key, units in groups.items() for start in range(0, len(units), MAX_UNITS_PER_CALL)
         ]
-        batches.sort(key=lambda batch: batch[0] not in JUDGE_SCORED_CHAPTERS)  # 점수에 쓰는 묶음을 먼저(예산이 모자라면 참고용이 밀린다)
+        batches.sort(key=lambda batch: batch[0] not in ctx.scored_chapters)  # 점수에 쓰는 묶음을 먼저(예산이 모자라면 참고용이 밀린다)
         scored: list[JudgeVerdict] = []
         reference: list[tuple[str, JudgeVerdict]] = []
         failures = reference_failures = 0
@@ -1166,11 +1174,11 @@ class QualityEvaluator:
             }
             verdict = self._call("groundedness_judge", JUDGE_GROUNDEDNESS_PROMPT, payload, events)
             if verdict is None:
-                if key in JUDGE_SCORED_CHAPTERS:
+                if key in ctx.scored_chapters:
                     failures += 1
                 else:
                     reference_failures += 1
-            elif key in JUDGE_SCORED_CHAPTERS:
+            elif key in ctx.scored_chapters:
                 scored.append(verdict)
             else:
                 reference.append((key, verdict))
