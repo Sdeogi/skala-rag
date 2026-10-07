@@ -207,3 +207,71 @@
 - 글꼴 파일은 TTF여야 한다. PDF 도구(reportlab)가 OTF(CFF 윤곽선)를 넣지 못한다
 
 **확인**: pytest 84 passed. fixture 5쪽, 근거 60건·출처 20개 9쪽(수준 1), 근거 90건·출처 30개 10쪽(수준 2). PDF 육안 확인
+
+## 2026-10-07 15:22 · sup/merge-quality · deogi · 충돌 해결
+
+**병합**: `origin/sup/quality`(9888c7d, 품질 평가기) → `sup/merge-quality`(`supervisor` 6ca072a에서 분기). `sup/quality` 브랜치 자체는 건드리지 않았다.
+
+**배경**: 품질 평가기 브랜치가 보고서 작성기(`report.py`, `llm_output.py`)의 인용 방식을 바꿨고, 같은 시기에 `supervisor`에는 보고서 조판 변경이 들어갔다. 같은 문제(문장 중간에 끼는 인용, 길게 늘어지는 인용 번호)를 양쪽이 다르게 풀었다. 품질 평가기 쪽 이유는 `docs/agent/history/C.md`의 14:34·15:12 항목, 조판 쪽 이유는 이 파일의 `sup/report-layout` 항목에 있다.
+
+**합의한 방식** (양쪽 변경을 모두 살림):
+- 표기는 `[n]`을 쓴다(공학 논문 관례). 5장 항목 번호 `(1)`과 인용 `(1)`이 겹쳐 읽는 사람이 헷갈리는 문제가 없어진다
+- 인용을 문장 중간에서 빼서 절 끝(마침표 앞)에 붙이는 것, 문단 끝 `근거:` 꼬리표를 지우는 것은 품질 평가기 브랜치의 방식을 그대로 받는다
+- 보고서 데이터는 번호마다 대괄호 하나(`[1] [2] [3]`)를 유지하고, 범위로 묶는 것(`[1–3]`)은 PDF·HTML을 그릴 때만 한다. 평가기가 번호를 하나씩 대응표에서 찾을 수 있다
+- 근거 목록 절의 이름은 "부록. 근거 목록"을 유지한다(평가기는 "각주"와 "부록"으로 시작하는 제목을 모두 읽는다). 표의 출처 칸에 출처 이름을 함께 적는 것은 품질 평가기 브랜치의 변경을 받는다
+
+**충돌 파일과 해결**:
+- `src/skala_rag/agents/report.py` (충돌 1곳 + 자동 병합된 부분의 의미 조정)
+  - 충돌: 같은 자리에 한쪽은 글꼴 상수(`BUNDLED_FONT` 등), 다른 쪽은 `TOKEN_WITH_SPACE`를 추가 → 둘 다 남김
+  - `number_citations`: 품질 평가기 브랜치의 절 끝 배치(`_clauses`, `_attach`, `_DANGLING_LABEL`)를 그대로 사용. `_attach`는 표시 앞에 공백을 두고(`…했다 [1] [2].`), 인용만 있는 표 칸에서는 앞 공백을 없앰
+  - `format_markers`: `(1)-(7)` 범위 대신 `[1] [2] … [7]`을 반환. 범위 묶기는 `compact_citations`(렌더링)가 맡음
+  - `FOOTNOTE_MARKER`, `expand_markers`, `RANGE_MIN` 삭제: 데이터에 `(n)` 표시와 범위가 없어 읽을 대상이 없다. `plain_text`는 대괄호 토큰 제거, 문장 부호 앞 공백 정리, `근거:` 꼬리표 제거를 유지
+  - `FOOTNOTE_HEADING` 상수는 유지하되 값은 "부록. 근거 목록". 4장 안내 문구와 이해관계자 관점 문구도 "부록 근거 목록"으로
+  - `_evidence_table`: `sources` 인자와 출처 이름 칸, `_column_weights`의 `출처` 1.2·`인용 구절` 4.4는 품질 평가기 브랜치 것을 유지. 번호 칸은 `[n]`
+  - `_covered`의 "인용만 있는 조각은 앞 문장에 속한다" 처리, `_quality_limit_lines`의 항목별 통과 기준은 품질 평가기 브랜치 것을 유지
+  - 5장 항목 번호를 `(1) (2)`에서 `① ②`로 바꿈(`ENUMERATORS`). 평가기가 요약·3·4·5장에서 `(n)`을 인용으로도 읽기 때문에, 문단 중간의 `(2)`가 인용 2번으로 잘못 세어지는 것을 막는다
+  - 조판 쪽 변경(Pretendard, 표 제목, 쪽 번호, `compact_citations`, 수준 3)은 그대로
+- `src/skala_rag/agents/llm_output.py` (자동 병합됨, 의미 조정)
+  - `bracketed` 삭제와 호출 2곳 원복: `(n)` 표시를 `[n]`으로 되돌리는 함수인데 데이터가 이미 `[n]`이다. 남겨 두면 본문의 `(2024)`가 아닌 `(12)` 같은 괄호 숫자를 인용으로 바꿀 수 있다
+  - `LLMReportAgent` 시스템 메시지의 "본문에는 근거 번호가 (번호)로 표시돼 있다" 문장을 원래 문장으로 되돌림(본문이 `[번호]`를 쓰므로 맞지 않는 설명)
+- `tests/test_output.py` (충돌 2곳)
+  - 3장 단언: 양쪽 기대값의 차이는 표기뿐 → `…긴 문맥 미검증 [1].`
+  - 파일 끝: 조판 쪽 `test_adjacent_citations_are_merged_for_display_only`와 품질 평가기 쪽 범위 테스트가 같은 자리에 추가됨 → 둘 다 남기고, 뒤쪽은 "데이터는 번호마다 대괄호 하나, 그릴 때만 묶음"을 확인하는 테스트로 바꿈
+  - 그 밖의 `(1)`·"각주" 단언을 `[1]`·"부록"으로 맞춤
+- `tests/test_llm_output.py`: `shown` 도우미가 아무것도 바꾸지 않게 하고(`[1]`이 그대로 남음), `bracketed` 테스트 2개 삭제
+
+**남의 파일**:
+- `tests/test_quality.py` (품질 평가 담당 소유) — 보고서 작성기의 출력 형식에 기대던 도우미와 테스트 3곳만 고침. 평가기 자체(`quality.py`)는 한 글자도 바꾸지 않았다
+  - `EVIDENCE_SECTION = "부록"` 추가, `footnote_rows`·`as_evidence_ids`와 절 필터가 "각주" 대신 이 값을 씀
+  - `as_evidence_ids`: `(n)` 대신 `[n]`을 근거 ID로 되돌림
+  - `test_a_run_of_citations_is_written_as_a_range_…` → `test_every_number_in_a_run_of_citations_is_verified`: 데이터에 범위가 없으므로 "연속한 번호 5개가 대괄호 하나씩 있고, 가운데 번호의 근거 행을 지우면 잡힌다"를 확인
+  - `test_judge_quotes_without_a_range_marker_are_still_found` → `test_judge_quotes_without_citation_numbers_are_still_found`
+  - 평가기의 `(n)`·범위 해석을 직접 확인하는 단위 테스트는 그대로 두었고 모두 통과한다
+
+**버린 변경**: 품질 평가기 브랜치의 표기 선택(`(n)`, 데이터 수준의 `(1)-(7)` 범위, 절 이름 "각주")과 그것을 위한 `bracketed`/`expand_markers`. 표기를 `[n]`으로 통일하기로 한 결정에 따른 것이며, 그 변경이 풀려던 문제(문장 중간의 인용, 긴 인용 나열)는 절 끝 배치와 렌더링 단계 묶기로 해결된다. 평가기의 `(n)` 해석 기능은 남아 있어 나중에 표기를 바꿔도 평가기는 그대로 쓸 수 있다.
+
+**충돌 시 지켜야 할 것**:
+- `format_markers`가 데이터에 범위나 `(n)`을 쓰도록 되돌리려면 5장 항목 번호와의 혼동, `compact_citations`와의 중복을 함께 해결해야 한다
+- `number_citations`를 제자리 치환으로 되돌리지 않는다(인용이 다시 문장 중간에 낀다)
+- 5장 항목 번호를 `(1)` 형태로 되돌리지 않는다. 평가기가 인용으로 읽는다
+- 근거 목록 절의 제목은 "부록" 또는 "각주"로 시작해야 평가기가 읽는다
+
+**확인**: `git diff --check` 통과, pytest 137 passed(tests/tools·evaluation·agents 제외), `app.py --mode replay --fixture` 정상. 근거 60건 State로 만든 보고서를 평가기에 넣어 Groundedness 5·중립성 5·커버리지 5 확인(인용과 근거 목록이 서로 맞게 읽힘). 쪽수: 근거 60건 9쪽, 근거 90건 10쪽
+
+## 2026-10-07 15:27 · sup/merge-quality · deogi
+
+**무엇을**: PDF·HTML에 그릴 때 인용 번호를 묶는 모양을 `[1–3, 5]`에서 IEEE 방식 `[1]–[3], [5]`로 변경
+
+**왜**: 번호마다 대괄호를 따로 쓰는 것이 IEEE 공식 양식이다. 앞서 쓴 `[1–3]`은 다른 번호식 양식(ACM 등)의 표기였다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py` — `compact_citations`: 연속한 번호 3개 이상은 `[a]–[b]`, 나머지는 쉼표로 구분한 `[a], [b]`
+- `tests/test_output.py` — 기대값 5곳 수정
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음. 보고서 데이터(`report["sections"]`)와 Markdown은 여전히 번호마다 대괄호 하나를 공백으로 구분해 쓴다(`[1] [2] [3]`)
+
+**충돌 시 지켜야 할 것**: 이 묶기를 보고서 데이터에 적용하지 않는다. 렌더링 단계(`_write_pdf`, HTML 템플릿의 `cite` 필터)에서만 쓴다
+
+**확인**: pytest 137 passed, fixture 실행 정상, 근거 60건 9쪽·근거 90건 10쪽
