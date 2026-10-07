@@ -10,6 +10,12 @@ Citations: sections are first written with raw evidence IDs (``[evidence_id]``),
 then ``number_citations`` replaces them with ``[1]``, ``[2]`` in order of first
 appearance. ``report["citation_map"]`` maps each number back to its evidence ID,
 and the appendix and REFERENCE list only what the body actually cites.
+
+Revisions: when ``state["quality_result"]`` asks for changes, the instructed
+sentences are replaced with a rewritten sentence when the caller supplies one,
+otherwise removed, in the named sections (``apply_instructions``), and
+quality items that stay below the threshold are listed in chapter 6
+(``accept_with_limits``). ``report["revision"]`` records what was done.
 """
 
 from __future__ import annotations
@@ -171,6 +177,161 @@ def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -
             table = {**table, "rows": [[rewrite(cell) for cell in row] for row in table.get("rows", [])]}
         numbered.append({**section, "paragraphs": paragraphs, "table": table})
     return numbered, {number: identifier for identifier, number in numbers.items()}
+
+
+QUALITY_ITEM_TITLES = {"groundedness": "Groundedness", "neutrality": "중립성", "bias": "편향 통제", "coverage": "관점 커버리지"}
+REVISING_ACTIONS = ("rewrite_report", "recollect")  # actions whose instructions change the report text
+REMOVED_NOTE = "(품질 평가 지적에 따라 해당 문장을 삭제했다.)"
+# One sentence plus the citations that trail it, so a removed sentence takes its citations along.
+SENTENCE = re.compile(r".+?(?:\.(?=\s|$)|$)(?:\s*\[[^\[\]]+\])*\s*", re.S)
+
+
+def plain_text(text: Any) -> str:
+    """Text without bracketed tokens and extra whitespace: citation numbers and evidence IDs compare equal."""
+    return " ".join(CITATION_TOKEN.sub(" ", str(text or "")).split())
+
+
+def revision_plan(state: GraphState) -> dict[str, Any] | None:
+    """What the quality evaluation asks of this report build, or None for a first/accepted build."""
+    quality = state.get("quality_result") or {}
+    action = str(quality.get("action") or "")
+    if action not in (*REVISING_ACTIONS, "accept_with_limits"):
+        return None
+    previous = state.get("report") or {}
+    instructions = [dict(item) for item in quality.get("instructions") or [] if isinstance(item, dict)]
+    return {
+        "action": action,
+        "instructions": instructions if action in REVISING_ACTIONS else [],
+        "number": int((previous.get("revision") or {}).get("number") or 0) + 1,
+    }
+
+
+def _covered(text: str, quote: str) -> tuple[list[str], set[int]]:
+    """Sentence chunks of ``text`` and the indexes ``quote`` covers (a quote may span several sentences)."""
+    chunks = SENTENCE.findall(text)
+    target = plain_text(quote).strip("….")
+    if not target:
+        return chunks, set()
+    # Locate the quote in the citation-free text, then map the match back to sentence chunks.
+    spans: list[tuple[int, int, int]] = []  # (chunk index, start, end) in the joined plain text
+    joined = ""
+    for index, chunk in enumerate(chunks):
+        plain = plain_text(chunk)
+        if not plain:
+            continue
+        start = len(joined) + (1 if joined else 0)
+        joined = f"{joined} {plain}" if joined else plain
+        spans.append((index, start, len(joined)))
+    found = joined.find(target)
+    if found < 0:
+        return chunks, set()
+    return chunks, {index for index, start, end in spans if start < found + len(target) and end > found}
+
+
+def _replace_quote(text: str, quote: str, replacement: str = "") -> tuple[str, bool]:
+    """Replace the sentences ``quote`` covers with ``replacement`` (empty: remove them)."""
+    chunks, covered = _covered(text, quote)
+    if not covered:
+        return text, False
+    first = min(covered)
+    parts = [(f"{replacement} " if replacement and index == first else "") if index in covered else chunk for index, chunk in enumerate(chunks)]
+    return "".join(parts).strip(), True
+
+
+def _instruction_sections(sections: list[dict[str, Any]], name: str, handled: frozenset[str]) -> list[dict[str, Any]]:
+    """Sections an instruction applies to: the named one, or every section when the name matches none."""
+    named = any(section["heading"] == name for section in sections)
+    return [section for section in sections if section["heading"] not in handled and (not named or section["heading"] == name)]
+
+
+def locate_instruction(sections: list[dict[str, Any]], instruction: dict[str, Any]) -> dict[str, str] | None:
+    """Find the sentence an instruction quotes: ``{"section", "sentence", "context"}`` (context: its paragraph or table row)."""
+    quote = str(instruction.get("quote") or "")
+    for section in _instruction_sections(sections, str(instruction.get("section") or ""), frozenset()):
+        for paragraph in section.get("paragraphs", []):
+            chunks, covered = _covered(str(paragraph), quote)
+            if covered:
+                return {"section": section["heading"], "sentence": "".join(chunks[index] for index in sorted(covered)).strip(), "context": str(paragraph)}
+        for row in (section.get("table") or {}).get("rows", []):
+            for cell in row:
+                chunks, covered = _covered(str(cell), quote)
+                if covered:
+                    return {"section": section["heading"], "sentence": "".join(chunks[index] for index in sorted(covered)).strip(), "context": " | ".join(str(item) for item in row)}
+    return None
+
+
+def apply_instructions(
+    sections: list[dict[str, Any]],
+    instructions: list[dict[str, Any]],
+    handled: frozenset[str] = frozenset(),
+    replacements: dict[int, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Revise the instructed sentences in their sections.
+
+    ``replacements`` maps an instruction's position to a rewritten sentence
+    (citing raw evidence IDs); without one the sentence is removed. Only the
+    section named by the instruction is changed (every section is searched when
+    the name matches none). Sections in ``handled`` were rewritten as a whole by
+    the LLM and are left alone. Returns the sections and one record per
+    instruction: ``replaced``, ``removed``, ``rewritten``, ``not_found`` or ``no_quote``.
+    """
+    replacements = replacements or {}
+    sections = [{**section, "paragraphs": list(section.get("paragraphs", [])), "table": section.get("table")} for section in sections]
+    applied: list[dict[str, Any]] = []
+    for position, instruction in enumerate(instructions):
+        name = str(instruction.get("section") or "")
+        record = {"item": instruction.get("item"), "section": name, "quote": _clip(instruction.get("quote"), 120)}
+        if name in handled:
+            applied.append({**record, "result": "rewritten"})
+            continue
+        quote = str(instruction.get("quote") or "")
+        if not plain_text(quote).strip("…."):
+            applied.append({**record, "result": "no_quote"})
+            continue
+        replacement = replacements.get(position, "")
+        changed = False
+        for section in _instruction_sections(sections, name, handled):
+            paragraphs = []
+            for paragraph in section["paragraphs"]:
+                text, hit = _replace_quote(paragraph, quote, replacement)
+                changed = changed or hit
+                if text:
+                    paragraphs.append(text)
+            if section["paragraphs"] and not paragraphs:
+                paragraphs = [REMOVED_NOTE]
+            section["paragraphs"] = paragraphs
+            table = section["table"]
+            if table and table.get("rows"):
+                rows = []
+                for row in table["rows"]:
+                    cells = []
+                    for cell in row:
+                        text, hit = _replace_quote(str(cell), quote, replacement)
+                        changed = changed or hit
+                        cells.append((text or REMOVED_NOTE) if hit else cell)
+                    rows.append(cells)
+                section["table"] = {**table, "rows": rows}
+        applied.append({**record, "result": ("replaced" if replacement else "removed") if changed else "not_found"})
+    return sections, applied
+
+
+def _quality_limit_lines(state: GraphState) -> list[str]:
+    """Chapter 6 lines for quality items accepted below the threshold."""
+    quality = state.get("quality_result") or {}
+    if quality.get("action") != "accept_with_limits":
+        return []
+    threshold = quality.get("threshold")
+    failed = []
+    for key, item in (quality.get("items") or {}).items():
+        if not isinstance(item, dict) or item.get("score") is None or (threshold is not None and item["score"] >= threshold):
+            continue
+        reasons = "; ".join(_clip(reason, 140) for reason in (item.get("reasons") or [])[:2])
+        failed.append(f"{QUALITY_ITEM_TITLES.get(key, key)} {item['score']}점" + (f"({reasons})" if reasons else ""))
+    if not failed:
+        return []
+    return [
+        f"품질 평가 미달 항목: 재작성·재수집 상한에 도달해 통과 기준({threshold}점)에 못 미친 항목을 그대로 둔다. " + "; ".join(failed) + "."
+    ]
 
 
 def _section(heading: str, paragraphs: list[str], table: dict[str, Any] | None = None, level: int = 1) -> dict[str, Any]:
@@ -517,7 +678,7 @@ def _coverage_lines(state: GraphState) -> list[str]:
 
 
 def _limitations(state: GraphState, synthesis: dict[str, Any]) -> list[str]:
-    limits = _coverage_lines(state)
+    limits = _quality_limit_lines(state) + _coverage_lines(state)
     limits.extend(synthesis.get("limitations") or [])
     limits.extend(limitation_lines(state))
     grouped: dict[tuple[str, str, str], list[str]] = {}
@@ -598,7 +759,14 @@ def format_reference(label: str, source: dict[str, Any]) -> str:
     return f"[{label}] {text}"
 
 
-def _compose(state: GraphState, summary: list[str] | None, layout: Layout, insights: list[str] | None = None) -> dict[str, Any]:
+def _compose(
+    state: GraphState,
+    summary: list[str] | None,
+    layout: Layout,
+    insights: list[str] | None = None,
+    handled: frozenset[str] = frozenset(),
+    replacements: dict[int, str] | None = None,
+) -> dict[str, Any]:
     """One report build under a given length budget."""
     config = state["run_config"]
     technologies = config["technologies"]
@@ -635,6 +803,12 @@ def _compose(state: GraphState, summary: list[str] | None, layout: Layout, insig
     sections.append(_section("5. 시사점", _synthesis_paragraphs(state, synthesis, evidence, layout, insights)))
     sections.append(_section("6. 한계점", _limitations(state, synthesis)))
 
+    # Quality-evaluation instructions are applied before numbering so removed sentences take their citations along.
+    plan = revision_plan(state)
+    applied: list[dict[str, Any]] = []
+    if plan and plan["instructions"]:
+        sections, applied = apply_instructions(sections, plan["instructions"], handled, replacements)
+
     # Number the body first: the appendix and REFERENCE list only what the body cites.
     sections, citation_map = number_citations(sections, evidence)
     used_source_ids = list(
@@ -658,14 +832,24 @@ def _compose(state: GraphState, summary: list[str] | None, layout: Layout, insig
         "citation_map": citation_map,
         "used_source_ids": used_source_ids,
         "generation_mode": "deterministic",
+        "revision": {"number": plan["number"], "action": plan["action"], "applied": applied} if plan else {"number": 0},
     }
 
 
-def build_report(state: GraphState, *, summary: list[str] | None = None, insights: list[str] | None = None) -> dict[str, Any]:
+def build_report(
+    state: GraphState,
+    *,
+    summary: list[str] | None = None,
+    insights: list[str] | None = None,
+    handled: frozenset[str] = frozenset(),
+    replacements: dict[int, str] | None = None,
+) -> dict[str, Any]:
     """Build the report within the page limit.
 
     ``summary`` replaces the rule-based SUMMARY and ``insights`` the rule-based
-    body of chapter 5; both cite raw evidence IDs. The
+    body of chapter 5; both cite raw evidence IDs. ``handled`` names sections
+    the caller already rewrote for the quality instructions and ``replacements``
+    maps an instruction's position to its rewritten sentence. The
     report is laid out with the roomiest budget first and rebuilt with tighter
     ones while the rendered PDF exceeds ``MAX_PDF_PAGES``. ``report["layout"]``
     records the level used, the page count and whether it fits.
@@ -673,7 +857,7 @@ def build_report(state: GraphState, *, summary: list[str] | None = None, insight
     report: dict[str, Any] = {}
     pages = 0
     for layout in LAYOUTS:
-        report = _compose(state, summary, layout, insights)
+        report = _compose(state, summary, layout, insights, handled, replacements)
         pages = pdf_page_count(report)
         if pages <= MAX_PDF_PAGES:
             break
