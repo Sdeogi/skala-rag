@@ -1,7 +1,7 @@
 import os
 
 from skala_rag.agents.korean import josa
-from skala_rag.agents.report import LAYOUTS, MAX_PDF_PAGES, SUMMARY_LIMIT, _clip_sentences, _compose, build_report, format_reference, number_citations, pdf_page_count, save_outputs
+from skala_rag.agents.report import compact_citations, LAYOUTS, MAX_PDF_PAGES, SUMMARY_LIMIT, _clip_sentences, _compose, build_report, format_reference, number_citations, pdf_page_count, save_outputs
 from skala_rag.graph.schemas import LABELS
 from skala_rag.agents.synthesis import synthesize
 from skala_rag.graph.workflow import initial_state
@@ -218,7 +218,7 @@ def test_technical_overview_is_one_paragraph_per_technology():
     state = base_state()
     state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 양자화한다.", "experiment_conditions": ["Llama-2-7B.", "A100"], "performance": ["2.6x memory"], "limitations": ["긴 문맥 미검증"], "evidence_ids": ["e1"]}}
     section = next(section for section in build_report(state)["sections"] if section["heading"] == "3. 기술 개요")
-    assert section["paragraphs"][0] == "KIVI의 핵심 원리: KV를 2비트로 양자화한다. KIVI의 실험 조건: Llama-2-7B; A100. KIVI의 성능 보고: 2.6x memory. KIVI의 한계: 긴 문맥 미검증. 근거: [1]"
+    assert section["paragraphs"][0] == "KIVI의 핵심 원리: KV를 2비트로 양자화한다. KIVI의 실험 조건: Llama-2-7B; A100. KIVI의 성능 보고: 2.6x memory. KIVI의 한계: 긴 문맥 미검증 [1]."
     assert section["paragraphs"][1] == "InfiniGen: 기술 조사 결과 미확인"
 
 
@@ -355,3 +355,20 @@ def test_accept_with_limits_lists_failed_quality_items_and_leaves_the_body_alone
     assert all(before[heading] == after[heading] for heading in before if heading != "6. 한계점")
     state["quality_result"] = {**quality("pass"), "passed": True}
     assert build_report(state)["revision"] == {"number": 0}
+
+
+def test_adjacent_citations_are_merged_for_display_only(tmp_path):
+    assert compact_citations("보고됐다 [1] [2] [3] [4] [5] [6] [7] [8].") == "보고됐다 [1–8]."
+    assert compact_citations("[1] [3] [5] [6] [7]") == "[1, 3, 5–7]"
+    assert compact_citations("[2][9] 그리고 [4] [5]") == "[2, 9] 그리고 [4, 5]"
+    assert compact_citations("단독 [3], 근거 ID [e1] [e2], 표지 [R1] [R2]") == "단독 [3], 근거 ID [e1] [e2], 표지 [R1] [R2]"
+    state = revisable_state()
+    state["market_analysis"]["technologies"]["KIVI"]["adoption"]["evidence_ids"] = ["e1", "e2"]
+    full = initial_state(mode="replay")
+    full.update(state)
+    full["run_config"] = initial_state(mode="replay")["run_config"]
+    full["report"] = build_report(full)
+    adoption = next(row for row in sections_by_heading(full["report"])["4.1 시장성"]["table"]["rows"] if row[1] == "상용화와 채택 현황")
+    assert adoption[-1] == "[1] [2]"  # the data keeps one bracket per citation
+    save_outputs(full, tmp_path)
+    assert "[1, 2]" in (tmp_path / "report.html").read_text(encoding="utf-8") and "[1] [2]" in (tmp_path / "report.md").read_text(encoding="utf-8")
