@@ -53,3 +53,19 @@
 **인터페이스 영향**: 각 판정의 `conditions`에 상황에 따라 ` / 단일 출처` 접미사가 붙는다. `tools/web.get_search_results`/`get_source`가 live 호출에서 `BudgetExhausted`를 던질 수 있고, agent/collector의 기존 Exception 캐치가 이걸 비치명 오류로 기록한다. `run_config["budget"]`에 `{"web_search_max": N, "fetch_max": M}`을 넣으면 그 상한으로 리셋된다(기본 20/30).
 **충돌 시 지켜야 할 것**: 공유 `WebBudget`은 `create_services`에서 한 번 만들어 `IntegrationSettings.budget`에 저장되고 `tools/web`에 설치된다. `install_web_budget`/`clear_web_budget` 호출 순서를 바꿔 설치를 날리지 말 것. `_mark_single_source`는 `_combined_evidence(state["evidence"], 새로 수집한 evidence)`를 받으므로 이 입력을 잘라내지 말 것.
 **확인**: `.venv/bin/python -m pytest -q` → 89/89.
+
+## 2026-10-07 16:00 · sup/agents · tmdtjr
+
+**무엇을**: 재작업 계약·웹 예산·쿼리 격리·반환값에 대한 테스트를 추가해 과제 요구 체크리스트를 커버했다.
+**왜**: 코드가 의도대로 동작하는지 가짜 서비스로 검증하기 위함. 이전 작업에서 교체한 통합 테스트가 "지시받은 field만 재수집"을 이미 커버하므로, 나머지(쿼리 변화, review_reason 반영, 예산 소진, 쿼리 격리, 제어 필드 미유출)를 추가로 작성.
+**바꾼 파일**:
+- `tests/test_rework.py` — 신규. `build_rework_queries` 단위 테스트: research/rejudge 분류, review_reason 키워드가 쿼리에 반영, 사전 쿼리와 중복되는 쿼리 제외, 넓힘 변형(limitation/issue 포함), rejudge-only 요청에도 폴백 쿼리.
+- `tests/tools/test_budget.py` — 신규. `WebBudget.try_search`/`try_fetch` 상한, `reset`, `tools.web.get_search_results`가 live 호출에서 `BudgetExhausted`를 던지는지, replay 모드는 예산 소비 안 하는지. autouse fixture로 모듈 레벨 budget을 테스트 간 격리.
+- `tests/test_integration.py` — 3개 통합 테스트 추가:
+  - `test_rework_passes_fresh_queries_to_agent` — 재작업 시 agent에 `queries_by_topic`과 `topics`가 전달되고, `unsupported_claim` 사유에 따옴표 처리된 기술명이 쿼리에 들어간다.
+  - `test_stakeholder_search_topic_isolates_query_errors` — 쿼리 하나가 raise해도 나머지 쿼리 결과는 수집되고 errors에 그 쿼리 에러만 기록된다.
+  - `test_services_return_only_payload_keys` — 네 perspective 서비스 반환값에 Supervisor 소유 제어 필드(`agent_status`, `next`, `decision_log` 등)가 없다.
+**남의 파일**: 없음.
+**인터페이스 영향**: 없음. 테스트만 추가.
+**충돌 시 지켜야 할 것**: `tests/tools/test_budget.py`의 `_clear_budget` autouse fixture는 `tools.web`의 모듈 레벨 budget 설치를 매 테스트 전후로 비운다. 지우면 다른 테스트와 상태가 섞인다.
+**확인**: `.venv/bin/python -m pytest -q` → 105/105.

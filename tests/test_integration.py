@@ -301,3 +301,98 @@ def test_web_search_errors_are_aggregated_per_stage_and_type(papers_dir, tmp_pat
     reason = update["errors"]["trl-web-0"]["reason"]
     assert reason.startswith("search FileNotFoundError ×10 (") and "trl-trl_4" in reason
     assert update["trl_analysis"]["technologies"]["KIVI"]["trl"]["label"] == "TRL 3"
+
+
+# ---------------------------------------------------------------------------
+# Rework contract tests (作業 4): queries differ, review_reason reaches query,
+# per-query error isolation, services return payload-only keys.
+# ---------------------------------------------------------------------------
+
+
+def test_rework_passes_fresh_queries_to_agent(papers_dir, tmp_path):
+    """On rework, the service must call the agent with queries_by_topic set so
+    the second round genuinely issues different searches."""
+    settings, _ = make_settings(papers_dir, tmp_path)
+    seen_kwargs: list[dict] = []
+
+    def capturing_agent(technologies=TECHS, mode="live", **kwargs):
+        seen_kwargs.append(dict(kwargs))
+        return web_agent("market")(technologies=technologies, mode=mode)
+
+    settings.market_agent = capturing_agent
+    services = create_services(settings)
+    state = initial_state(mode="live")
+    first = services.market(state)
+    assert all("queries_by_topic" not in call for call in seen_kwargs), "first run uses the agent defaults"
+
+    state.update(retry_mode=True, retry_count=1, market_analysis=first["market_analysis"])
+    state["missing_questions"] = [
+        {
+            "perspective": "market",
+            "technology": "KIVI",
+            "field": "adoption",
+            "question": "KIVI 상용 서비스 적용 사례",
+            "reasons": ["unsupported_claim"],
+            "review_reason": "근거가 재현 수준에 머물고 상용 적용을 직접 다루지 않음",
+        }
+    ]
+    services.market(state)
+    rework_kwargs = [call for call in seen_kwargs if "queries_by_topic" in call]
+    assert rework_kwargs, "rework call must forward queries_by_topic"
+    queries = rework_kwargs[-1]["queries_by_topic"]
+    assert "adoption" in queries and queries["adoption"], "the requested field must get fresh queries"
+    # review_reason narrowing should pull a quoted technology name into at least one query.
+    assert any('"KIVI"' in query for query in queries["adoption"])
+    assert "topics" in rework_kwargs[-1] and set(rework_kwargs[-1]["topics"]) == {"adoption"}
+
+
+def test_stakeholder_search_topic_isolates_query_errors(monkeypatch):
+    """stakeholder._search_topic must capture a single query's exception instead
+    of aborting the whole topic. Other queries' results still flow through and
+    the raising query is reported in the errors list."""
+    from skala_rag.agents import stakeholder as stakeholder_module
+
+    call_log: list[str] = []
+
+    def flaky_search(query, max_results, mode, cache_dir=None):
+        call_log.append(query)
+        if "limitation" in query:
+            raise RuntimeError("flaky search")
+        return [{"url": f"https://example.org/{len(call_log)}", "title": "ok", "content": "..."}]
+
+    monkeypatch.setattr(stakeholder_module, "get_search_results", flaky_search)
+    results, calls, errors = stakeholder_module._search_topic(
+        technology="KIVI",
+        topic="competitors",
+        mode="live",
+        max_results_per_query=1,
+        queries=["KIVI stable queryA", "KIVI limitation queryB", "KIVI stable queryC"],
+    )
+
+    assert len(call_log) == 3, "every query is attempted, even after one raised"
+    assert calls == 2, "only successful searches increment the call counter"
+    assert len(errors) == 1 and errors[0]["query"] == "KIVI limitation queryB"
+    assert len(results) == 2, "the two surviving queries contribute results"
+
+
+def test_services_return_only_payload_keys(papers_dir, tmp_path):
+    """Perspective services must not leak control-plane fields (agent_status,
+    rework_requests, next, decision_log, …) in their return dicts; the
+    Supervisor owns those."""
+    settings, _ = make_settings(papers_dir, tmp_path)
+    services = create_services(settings)
+    control_fields = {
+        "agent_status",
+        "rework_requests",
+        "next",
+        "decision_log",
+        "step_count",
+        "run_id",
+        "quality_result",
+        "quality_attempts",
+    }
+    state = initial_state(mode="replay")
+    for perspective_name in ("market", "stakeholder", "domain", "trl"):
+        update = getattr(services, perspective_name)(state)
+        leaked = control_fields & set(update)
+        assert not leaked, f"{perspective_name} returned control fields: {leaked}"
