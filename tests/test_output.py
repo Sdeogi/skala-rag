@@ -381,9 +381,9 @@ def test_accept_with_limits_lists_failed_quality_items_and_leaves_the_body_alone
 
 
 def test_adjacent_citations_are_merged_for_display_only(tmp_path):
-    assert compact_citations("보고됐다 [1] [2] [3] [4] [5] [6] [7] [8].") == "보고됐다 [1–8]."
-    assert compact_citations("[1] [3] [5] [6] [7]") == "[1, 3, 5–7]"
-    assert compact_citations("[2][9] 그리고 [4] [5]") == "[2, 9] 그리고 [4, 5]"
+    assert compact_citations("보고됐다 [1] [2] [3] [4] [5] [6] [7] [8].") == "보고됐다 [1]–[8]."
+    assert compact_citations("[1] [3] [5] [6] [7]") == "[1], [3], [5]–[7]"
+    assert compact_citations("[2][9] 그리고 [4] [5]") == "[2], [9] 그리고 [4], [5]"
     assert compact_citations("단독 [3], 근거 ID [e1] [e2], 표지 [R1] [R2]") == "단독 [3], 근거 ID [e1] [e2], 표지 [R1] [R2]"
     state = revisable_state()
     state["market_analysis"]["technologies"]["KIVI"]["adoption"]["evidence_ids"] = ["e1", "e2"]
@@ -394,7 +394,7 @@ def test_adjacent_citations_are_merged_for_display_only(tmp_path):
     adoption = next(row for row in sections_by_heading(full["report"])["4.1 시장성"]["table"]["rows"] if row[1] == "상용화와 채택 현황")
     assert adoption[-1] == "[1] [2]"  # the data keeps one bracket per citation
     save_outputs(full, tmp_path)
-    assert "[1, 2]" in (tmp_path / "report.html").read_text(encoding="utf-8") and "[1] [2]" in (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "[1], [2]" in (tmp_path / "report.html").read_text(encoding="utf-8") and "[1] [2]" in (tmp_path / "report.md").read_text(encoding="utf-8")
 
 
 def test_long_citation_runs_stay_one_bracket_each_in_the_data_and_merge_only_when_drawn():
@@ -413,6 +413,6 @@ def test_long_citation_runs_stay_one_bracket_each_in_the_data_and_merge_only_whe
     numbered, citation_map = number_citations(sections, ids)
     assert numbered[0]["paragraphs"] == ["KIVI는 보고됐다 [1] [2] [3] [4] [5] [6] [7].", "짧은 인용이다 [1] [2]."]
     assert numbered[0]["table"]["rows"] == [["[1] [2] [3] [4] [5]"], ["[8] [9]"]]
-    assert [compact_citations(text) for text in numbered[0]["paragraphs"]] == ["KIVI는 보고됐다 [1–7].", "짧은 인용이다 [1, 2]."]
+    assert [compact_citations(text) for text in numbered[0]["paragraphs"]] == ["KIVI는 보고됐다 [1]–[7].", "짧은 인용이다 [1], [2]."]
     # 번호 매긴 문장과 번호 매기기 전 문장이 같은 글로 비교된다(수정 지시의 quote 대조)
     assert plain_text("KIVI는 보고됐다 [1] [2] [3].") == plain_text("KIVI는 보고됐다 [e1] [e2] [e3].") == "KIVI는 보고됐다."

@@ -257,3 +257,21 @@
 - 근거 목록 절의 제목은 "부록" 또는 "각주"로 시작해야 평가기가 읽는다
 
 **확인**: `git diff --check` 통과, pytest 137 passed(tests/tools·evaluation·agents 제외), `app.py --mode replay --fixture` 정상. 근거 60건 State로 만든 보고서를 평가기에 넣어 Groundedness 5·중립성 5·커버리지 5 확인(인용과 근거 목록이 서로 맞게 읽힘). 쪽수: 근거 60건 9쪽, 근거 90건 10쪽
+
+## 2026-10-07 15:27 · sup/merge-quality · deogi
+
+**무엇을**: PDF·HTML에 그릴 때 인용 번호를 묶는 모양을 `[1–3, 5]`에서 IEEE 방식 `[1]–[3], [5]`로 변경
+
+**왜**: 번호마다 대괄호를 따로 쓰는 것이 IEEE 공식 양식이다. 앞서 쓴 `[1–3]`은 다른 번호식 양식(ACM 등)의 표기였다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py` — `compact_citations`: 연속한 번호 3개 이상은 `[a]–[b]`, 나머지는 쉼표로 구분한 `[a], [b]`
+- `tests/test_output.py` — 기대값 5곳 수정
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음. 보고서 데이터(`report["sections"]`)와 Markdown은 여전히 번호마다 대괄호 하나를 공백으로 구분해 쓴다(`[1] [2] [3]`)
+
+**충돌 시 지켜야 할 것**: 이 묶기를 보고서 데이터에 적용하지 않는다. 렌더링 단계(`_write_pdf`, HTML 템플릿의 `cite` 필터)에서만 쓴다
+
+**확인**: pytest 137 passed, fixture 실행 정상, 근거 60건 9쪽·근거 90건 10쪽

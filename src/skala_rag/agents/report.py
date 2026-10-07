@@ -12,7 +12,7 @@ then ``number_citations`` takes them out of the sentence and puts ``[1]``, ``[2]
 (numbered in order of first appearance) at the end of the clause they belonged to.
 ``report["citation_map"]`` maps each number back to its evidence ID, and the
 appendix and REFERENCE list only what the body actually cites. The data keeps
-one bracket per citation; adjacent numbers are merged (``[1–3]``) only when the
+one bracket per citation; adjacent numbers are written as a range (``[1]–[3]``) only when the
 PDF and HTML are drawn.
 
 Revisions: when ``state["quality_result"]`` asks for changes, the instructed
@@ -1050,9 +1050,10 @@ CITATION_RUN = re.compile(r"\[\d+\](?:\s*\[\d+\])+")
 
 
 def compact_citations(text: Any) -> str:
-    """Merge adjacent citation numbers for display: ``[1] [2] [3] [5]`` -> ``[1–3, 5]``.
+    """Write adjacent citation numbers the IEEE way for display: ``[1] [2] [3] [5]`` -> ``[1]–[3], [5]``.
 
-    Rendering only. The section data keeps one bracket per citation so each
+    Every number keeps its own brackets; three or more consecutive numbers become a
+    range and the rest are separated by commas (``[1], [2]``). Rendering only. The section data keeps one bracket per citation so each
     number can be looked up in ``citation_map``.
     """
 
@@ -1065,12 +1066,12 @@ def compact_citations(text: Any) -> str:
                 previous = number
                 continue
             if previous - start >= 2:
-                parts.append(f"{start}–{previous}")
+                parts.append(f"[{start}]–[{previous}]")
             else:
-                parts.extend(str(value) for value in range(start, previous + 1))
+                parts.extend(f"[{value}]" for value in range(start, previous + 1))
             if number is not None:
                 start = previous = number
-        return "[" + ", ".join(parts) + "]"
+        return ", ".join(parts)
 
     return CITATION_RUN.sub(merge, str(text))
 
