@@ -75,6 +75,19 @@ TECHNOLOGY_ANCHORS = {
     "InfiniGen": ("kv cache", "offload", "2406.19707"),
 }
 
+# Hosts whose "KIVI" / "InfiniGen" hits are known to be unrelated to the KV cache
+# technologies (name collisions: fruit data companies, consumer blogs, …). Treated
+# as noise and dropped before any fetch.
+NOISE_DOMAINS: frozenset[str] = frozenset(
+    {
+        "kiwidata.com",
+        "kiwi.com",
+        "kiwi.korea.com",
+        "pinterest.com",
+        "quora.com",
+    }
+)
+
 TOPIC_RELATIONS = {
     "market_size": {"market_estimate"},
     "adoption": {"adoption", "adoption_limitation"},
@@ -150,6 +163,12 @@ def is_search_result_relevant(
         normalize_url(url)
     except (ValueError, TypeError):
         return False
+    host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+    if host in NOISE_DOMAINS:
+        return False
+    # The original arXiv/MLR paper is primary literature, not a stakeholder / market signal.
+    if _is_original_paper(url, technology):
+        return False
 
     text = _normalized_text(
         " ".join(_text(result.get(k)) for k in ("title", "content", "url"))
@@ -175,9 +194,7 @@ def is_search_result_relevant(
 
     if not re.search(rf"\b{re.escape(technology.casefold())}\b", text):
         return False
-    if not any(_normalized_text(a) in text for a in TECHNOLOGY_ANCHORS[technology]):
-        return False
-    return not (topic == "ecosystem" and _is_original_paper(url, technology))
+    return any(_normalized_text(a) in text for a in TECHNOLOGY_ANCHORS[technology])
 
 
 def _round_robin_candidates(groups: list[list[tuple]]) -> list[tuple]:
@@ -232,6 +249,7 @@ def collect_market_evidence(
     *,
     max_attempts_per_topic: int = 6,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    queries_by_topic: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """시장성 평가에 필요한 웹 근거를 제한된 횟수 안에서 수집한다."""
     if technology not in TECHNOLOGY_SEARCH_TERMS:
@@ -268,8 +286,10 @@ def collect_market_evidence(
         groups = []
         topic_error_start = len(output["errors"])
 
-        for template in SEARCH_QUERIES[topic]:
-            query = template.format(technology=technology, **terms)
+        override = (queries_by_topic or {}).get(topic)
+        topic_queries = list(override) if override else list(SEARCH_QUERIES[topic])
+        for template in topic_queries:
+            query = template.format(technology=technology, **terms) if "{" in template else template
             candidates = []
             try:
                 hits = get_search_results(
@@ -490,13 +510,31 @@ def _judgment(
     }
 
 
+def _effective_scope(entry: dict[str, Any]) -> str:
+    """Return the entry's scope after a safety demotion.
+
+    The summariser occasionally tags related-market reports (LLM inference, AI
+    infrastructure) with ``scope="technology"``. If the quote/claim does not name
+    the technology directly, we demote it to ``related_market`` so a plain LLM
+    market report cannot flow into the "직접 자료 있음" bucket.
+    """
+    scope = str(entry.get("scope") or "")
+    if scope != "technology":
+        return scope
+    tech = str(entry.get("technology") or "").strip().lower()
+    if not tech:
+        return scope
+    blob = f"{entry.get('quote') or ''} {entry.get('claim') or ''}".lower()
+    return scope if tech in blob else "related_market"
+
+
 def build_market_judgments(collection: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """수집된 직접 근거를 설계 Rubric 라벨로 결정론적으로 변환한다."""
     evidence = list(collection.get("evidence") or [])
 
     market_entries = [e for e in evidence if e.get("topic") == "market_size"]
-    direct_market = [e for e in market_entries if e.get("scope") == "technology"]
-    related_market = [e for e in market_entries if e.get("scope") == "related_market"]
+    direct_market = [e for e in market_entries if _effective_scope(e) == "technology"]
+    related_market = [e for e in market_entries if _effective_scope(e) == "related_market"]
     if direct_market:
         market_size = _judgment(
             "직접 자료 있음",
@@ -586,15 +624,19 @@ def evaluate_market(
     sources_per_topic: int = 2,
     max_attempts_per_topic: int = 6,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    topics: tuple[MarketTopic, ...] = ("market_size", "adoption", "ecosystem"),
+    queries_by_topic: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """기술 하나의 시장성 근거 수집과 Rubric 판정을 한 번에 수행한다."""
     collection = collect_market_evidence(
         technology=technology,
+        topics=topics,
         mode=mode,
         max_results=max_results,
         sources_per_topic=sources_per_topic,
         max_attempts_per_topic=max_attempts_per_topic,
         cache_dir=cache_dir,
+        queries_by_topic=queries_by_topic,
     )
     judgments = build_market_judgments(collection)
     unresolved = [

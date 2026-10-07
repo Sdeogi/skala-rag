@@ -1,14 +1,22 @@
 """이해관계자 웹 근거 수집 + Rubric 판정 Agent."""
 
+import re
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from skala_rag.tools.web import (
     DEFAULT_CACHE_DIR,
     get_search_results,
     get_source,
     summarize_source,
+)
+
+# Hosts whose "KIVI" / "InfiniGen" hits are known to be unrelated to the KV cache
+# technologies (name collisions, consumer blogs, …).
+NOISE_DOMAINS: frozenset[str] = frozenset(
+    {"kiwidata.com", "kiwi.com", "kiwi.korea.com", "pinterest.com", "quora.com"}
 )
 
 StakeholderTopic = Literal["competitors", "adopters", "industry_media"]
@@ -107,32 +115,69 @@ def _search_topic(
     mode: Literal["live", "replay"],
     max_results_per_query: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
-) -> tuple[list[dict[str, Any]], int]:
+    queries: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
+    """Issue the topic's queries one by one; a single query's error is captured
+    and reported instead of aborting the whole technology's collection."""
     all_results: list[dict[str, Any]] = []
     search_calls = 0
-    for query in _build_queries(technology, topic):
-        results = get_search_results(
-            query=query,
-            max_results=max_results_per_query,
-            mode=mode,
-            cache_dir=cache_dir,
-        )
+    errors: list[dict[str, Any]] = []
+    query_list = list(queries) if queries else _build_queries(technology, topic)
+    for query in query_list:
+        try:
+            results = get_search_results(
+                query=query,
+                max_results=max_results_per_query,
+                mode=mode,
+                cache_dir=cache_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad query shouldn't lose a topic
+            errors.append(
+                {
+                    "topic": topic,
+                    "stage": "search",
+                    "query": query,
+                    "error_type": type(exc).__name__,
+                    "error": f"search 단계 실패 ({type(exc).__name__})",
+                }
+            )
+            continue
         search_calls += 1
         all_results.extend(results)
-    return _deduplicate_results(all_results), search_calls
+    return _deduplicate_results(all_results), search_calls, errors
 
 
-def _is_valid_topic_source(topic: StakeholderTopic, url: str) -> bool:
-    """industry/media 축에서 원 논문·GitHub·Reddit 자체는 제외한다."""
+def _is_original_paper(url: str, technology: str) -> bool:
+    """Match the technology's primary arXiv / MLR / HuggingFace paper page."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    paper_id = re.escape(TECHNOLOGY_SEARCH_TERMS[technology]["paper"])
+    if host in {"arxiv.org", "export.arxiv.org", "alphaxiv.org"}:
+        return bool(
+            re.fullmatch(rf"/(?:abs|pdf|html|overview)/{paper_id}(?:v\d+)?(?:\.pdf)?/?", parts.path)
+        )
+    if host == "huggingface.co" and re.fullmatch(rf"/papers/{paper_id}/?", parts.path):
+        return True
+    return (
+        technology == "KIVI"
+        and host == "proceedings.mlr.press"
+        and parts.path.rstrip("/") == "/v235/liu24bz.html"
+    )
+
+
+def _is_valid_topic_source(topic: StakeholderTopic, url: str, technology: str | None = None) -> bool:
+    """Filter out noise domains, the technology's own paper (all axes), and —
+    for industry_media only — primary code hosts and discussion forums.
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    if host in NOISE_DOMAINS:
+        return False
+    if technology and technology in TECHNOLOGY_SEARCH_TERMS and _is_original_paper(url, technology):
+        return False
     if topic != "industry_media":
         return True
-    excluded = (
-        "github.com/",
-        "arxiv.org",
-        "export.arxiv.org",
-        "alphaxiv.org",
-        "reddit.com",
-    )
+    excluded = ("github.com/", "arxiv.org", "export.arxiv.org", "alphaxiv.org", "reddit.com")
     lowered = url.lower()
     return not any(domain in lowered for domain in excluded)
 
@@ -156,6 +201,7 @@ def _collect_topic_evidence(
     max_attempts: int = 8,
     max_results_per_query: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    queries: list[str] | None = None,
 ) -> dict[str, Any]:
     """하나의 이해관계자 축에서 실제 발언 근거를 수집한다."""
     topic_config = STAKEHOLDER_TOPICS[topic]
@@ -167,18 +213,19 @@ def _collect_topic_evidence(
         "단순 기술 존재나 소스코드 공개가 아니라 실제 주체의 평가/발언만 direct로 인정하세요."
     )
 
-    search_results, search_calls = _search_topic(
+    search_results, search_calls, search_errors = _search_topic(
         technology=technology,
         topic=topic,
         mode=mode,
         max_results_per_query=max_results_per_query,
         cache_dir=cache_dir,
+        queries=queries,
     )
 
     direct: list[dict[str, Any]] = []
     indirect: list[dict[str, Any]] = []
     sources: dict[str, dict[str, Any]] = {}
-    errors: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = list(search_errors)
     skipped: list[dict[str, Any]] = []
     attempts = 0
 
@@ -189,7 +236,7 @@ def _collect_topic_evidence(
         url = result.get("url")
         if not url:
             continue
-        if not _is_valid_topic_source(topic, url):
+        if not _is_valid_topic_source(topic, url, technology):
             skipped.append({"url": url, "reason": "source_type_excluded"})
             continue
 
@@ -266,6 +313,8 @@ def collect_stakeholder_evidence(
     max_attempts_per_topic: int = 8,
     max_results_per_query: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    topics: tuple[StakeholderTopic, ...] | None = None,
+    queries_by_topic: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """기술 하나의 이해관계자 실제 발언 근거를 세 축에서 수집한다."""
     if technology not in TECHNOLOGY_SEARCH_TERMS:
@@ -283,7 +332,10 @@ def collect_stakeholder_evidence(
         "metrics": {"web_search_calls": 0, "fetch_attempts": 0},
     }
 
-    for topic in STAKEHOLDER_TOPICS:
+    selected = tuple(topics) if topics else tuple(STAKEHOLDER_TOPICS.keys())
+    for topic in selected:
+        if topic not in STAKEHOLDER_TOPICS:
+            raise ValueError(f"지원하지 않는 topic: {topic}")
         collected = _collect_topic_evidence(
             technology=technology,
             topic=topic,
@@ -292,6 +344,7 @@ def collect_stakeholder_evidence(
             max_attempts=max_attempts_per_topic,
             max_results_per_query=max_results_per_query,
             cache_dir=cache_dir,
+            queries=(queries_by_topic or {}).get(topic),
         )
         output["topics"][topic] = collected["evidence"]
         output["indirect_evidence"].extend(collected["indirect_evidence"])

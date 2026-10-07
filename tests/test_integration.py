@@ -143,7 +143,9 @@ def test_domain_adapter_produces_graph_format_and_registers_new_chunks(papers_di
     state["evidence"] = {"KIVI-p3-1": {"source_id": "KIVI", "technology": "KIVI", "claim_type": "reported_fact"}}
     update = create_services(settings).domain(state)
     judgment = update["domain_analysis"]["technologies"]["KIVI"]["memory"]
-    assert judgment["label"] == "조건부 보고" and judgment["evidence_ids"] == ["KIVI-p3-1"] and judgment["conditions"] == "Llama-2-7B, A100"
+    assert judgment["label"] == "조건부 보고" and judgment["evidence_ids"] == ["KIVI-p3-1"]
+    # The judge stub cites one source, so '단일 출처' marker is appended to the conditions.
+    assert "Llama-2-7B, A100" in judgment["conditions"] and "단일 출처" in judgment["conditions"]
     assert update["domain_analysis"]["technologies"]["InfiniGen"]["integration"]["label"] == "낮음 보고"
     assert "KIVI-p4-1" in update["evidence"] and "KIVI-p3-1" not in update["evidence"]
     assert update["evidence"]["KIVI-p4-1"]["technology"] == "KIVI" and update["evidence"]["KIVI-p4-1"]["location"] == "p.4 Experiments"
@@ -168,7 +170,9 @@ def test_trl_adapter_builds_stage_details_and_web_evidence(papers_dir, tmp_path)
     judgment = update["trl_analysis"]["technologies"]["KIVI"]["trl"]
     assert judgment["label"] == "TRL 4" and judgment["highest_confirmed"] == "TRL 4"
     assert judgment["stages"]["TRL 5"]["met"] is False and "TRL 5 근거 없음" in judgment["stages"]["TRL 5"]["note"]
-    assert judgment["missing_evidence"] == ["[TRL 5] TRL 5 근거 없음"] and judgment["conditions"] == "[TRL 5] TRL 5 근거 없음"
+    assert judgment["missing_evidence"] == ["[TRL 5] TRL 5 근거 없음"]
+    # The web stub returns one source per stage, so bias-marker '단일 출처' is appended.
+    assert "[TRL 5] TRL 5 근거 없음" in judgment["conditions"] and "단일 출처" in judgment["conditions"]
     assert judgment["reason"].startswith("확인된 최고 단계 TRL 4:") and "다음 단계 TRL 5 미충족" in judgment["reason"]
     assert judgment["estimation_note"].startswith("공개 정보 기반 추정")
     web_ids = [identifier for identifier in update["evidence"] if identifier.startswith("web-evidence-")]
@@ -177,24 +181,35 @@ def test_trl_adapter_builds_stage_details_and_web_evidence(papers_dir, tmp_path)
     assert update["metrics"]["web_search_calls"] == 10 and update["metrics"]["fetch_calls"] == 10 and update["metrics"]["llm_calls"] == 14
 
 
-def test_web_perspective_repair_keeps_previous_judgments_without_new_searches(papers_dir, tmp_path):
+def test_web_perspective_rework_recollects_only_requested_fields(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
     services = create_services(settings)
     state = initial_state(mode="live")
     first = services.stakeholder(state)
     state.update(retry_mode=True, retry_count=1, stakeholder_analysis=first["stakeholder_analysis"])
-    state["missing_questions"] = [{"perspective": "stakeholder", "technology": "InfiniGen", "field": "adopter_view", "question": "?", "reasons": ["unsupported_claim"]}]
+    state["missing_questions"] = [
+        {"perspective": "stakeholder", "technology": "InfiniGen", "field": "adopter_view", "question": "?", "reasons": ["missing_evidence"]}
+    ]
     second = services.stakeholder(state)
-    assert settings.stakeholder_agent.calls == [("KIVI",), ("InfiniGen",)]  # no second collection
-    assert second["stakeholder_analysis"]["technologies"] == first["stakeholder_analysis"]["technologies"]
-    assert second["metrics"] == {"repair_skipped": 1} and second["errors"] == {} and list(first["errors"]) == ["stakeholder-x-0"]
+    # The requested (tech, field) triggers one more collection call; untouched techs stay idle.
+    assert settings.stakeholder_agent.calls == [("KIVI",), ("InfiniGen",), ("InfiniGen",)]
+    # KIVI is untouched; InfiniGen's other fields keep their previous judgments.
+    infinigen = second["stakeholder_analysis"]["technologies"]["InfiniGen"]
+    first_infinigen = first["stakeholder_analysis"]["technologies"]["InfiniGen"]
+    assert second["stakeholder_analysis"]["technologies"]["KIVI"] == first["stakeholder_analysis"]["technologies"]["KIVI"]
+    assert infinigen["competitor_view"] == first_infinigen["competitor_view"]
+    assert infinigen["investor_view"] == first_infinigen["investor_view"]
+    # The rework pass records queries in the perspective's search_log so the next round avoids repeats.
+    assert "adopter_view" in second["stakeholder_analysis"]["search_log"]["InfiniGen"]
 
 
-def test_web_perspective_repair_recollects_only_failed_technologies(papers_dir, tmp_path):
+def test_web_perspective_rework_retries_failed_technology(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
     attempts = {"InfiniGen": 0}
+    calls_log: list[tuple[str, ...]] = []
 
     def flaky(technologies=TECHS, mode="live", **kwargs):
+        calls_log.append(tuple(technologies))
         if "InfiniGen" in technologies:
             attempts["InfiniGen"] += 1
             if attempts["InfiniGen"] == 1:
@@ -211,17 +226,20 @@ def test_web_perspective_repair_recollects_only_failed_technologies(papers_dir, 
         {"perspective": "stakeholder", "technology": tech, "field": "adopter_view", "question": "?", "reasons": ["missing_evidence"]} for tech in TECHS
     ]
     second = services.stakeholder(state)
-    assert second["stakeholder_analysis"]["technologies"]["InfiniGen"]["adopter_view"]["label"] == "우려"  # re-collected
-    assert second["stakeholder_analysis"]["technologies"]["KIVI"] == first["stakeholder_analysis"]["technologies"]["KIVI"]  # kept
-    assert second["metrics"]["repair_skipped"] == 1 and attempts["InfiniGen"] == 2
+    assert second["stakeholder_analysis"]["technologies"]["InfiniGen"]["adopter_view"]["label"] == "우려"
+    assert attempts["InfiniGen"] == 2
+    # Both requested technologies are re-collected; the previously-failed InfiniGen attempt counted.
+    assert calls_log == [("KIVI",), ("InfiniGen",), ("KIVI",), ("InfiniGen",)]
 
 
-def test_trl_repair_reads_web_pages_from_cache(papers_dir, tmp_path):
+def test_trl_rework_keeps_live_mode_and_skips_met_stages(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
-    seen_modes = []
+    seen_modes: list[str] = []
+    seen_queries: list[str] = []
 
     def search(query, max_results, mode, cache_dir=None):
         seen_modes.append(mode)
+        seen_queries.append(query)
         return fake_search(query, max_results, mode, cache_dir)
 
     settings.search_results = search
@@ -230,10 +248,16 @@ def test_trl_repair_reads_web_pages_from_cache(papers_dir, tmp_path):
     first = services.trl(state)
     assert set(seen_modes) == {"live"}
     seen_modes.clear()
+    seen_queries.clear()
     state.update(retry_mode=True, retry_count=1, trl_analysis=first["trl_analysis"])
-    state["missing_questions"] = [{"perspective": "trl", "technology": "KIVI", "field": "trl", "question": "?", "reasons": ["unsupported_claim"]}]
+    state["missing_questions"] = [
+        {"perspective": "trl", "technology": "KIVI", "field": "trl", "question": "?", "reasons": ["unsupported_claim"]}
+    ]
     services.trl(state)
-    assert seen_modes and set(seen_modes) == {"replay"} and len(seen_modes) == 5
+    # Rework must honour the run's mode (no more forced replay) and only KIVI is targeted.
+    assert seen_modes and set(seen_modes) == {"live"}
+    assert all("KIVI" in query or "2402.02750" in query for query in seen_queries)
+    assert not any("InfiniGen" in query for query in seen_queries)
 
 
 def test_web_perspective_failure_degrades_to_unknown_labels(papers_dir, tmp_path):
@@ -277,3 +301,98 @@ def test_web_search_errors_are_aggregated_per_stage_and_type(papers_dir, tmp_pat
     reason = update["errors"]["trl-web-0"]["reason"]
     assert reason.startswith("search FileNotFoundError ×10 (") and "trl-trl_4" in reason
     assert update["trl_analysis"]["technologies"]["KIVI"]["trl"]["label"] == "TRL 3"
+
+
+# ---------------------------------------------------------------------------
+# Rework contract tests (作業 4): queries differ, review_reason reaches query,
+# per-query error isolation, services return payload-only keys.
+# ---------------------------------------------------------------------------
+
+
+def test_rework_passes_fresh_queries_to_agent(papers_dir, tmp_path):
+    """On rework, the service must call the agent with queries_by_topic set so
+    the second round genuinely issues different searches."""
+    settings, _ = make_settings(papers_dir, tmp_path)
+    seen_kwargs: list[dict] = []
+
+    def capturing_agent(technologies=TECHS, mode="live", **kwargs):
+        seen_kwargs.append(dict(kwargs))
+        return web_agent("market")(technologies=technologies, mode=mode)
+
+    settings.market_agent = capturing_agent
+    services = create_services(settings)
+    state = initial_state(mode="live")
+    first = services.market(state)
+    assert all("queries_by_topic" not in call for call in seen_kwargs), "first run uses the agent defaults"
+
+    state.update(retry_mode=True, retry_count=1, market_analysis=first["market_analysis"])
+    state["missing_questions"] = [
+        {
+            "perspective": "market",
+            "technology": "KIVI",
+            "field": "adoption",
+            "question": "KIVI 상용 서비스 적용 사례",
+            "reasons": ["unsupported_claim"],
+            "review_reason": "근거가 재현 수준에 머물고 상용 적용을 직접 다루지 않음",
+        }
+    ]
+    services.market(state)
+    rework_kwargs = [call for call in seen_kwargs if "queries_by_topic" in call]
+    assert rework_kwargs, "rework call must forward queries_by_topic"
+    queries = rework_kwargs[-1]["queries_by_topic"]
+    assert "adoption" in queries and queries["adoption"], "the requested field must get fresh queries"
+    # review_reason narrowing should pull a quoted technology name into at least one query.
+    assert any('"KIVI"' in query for query in queries["adoption"])
+    assert "topics" in rework_kwargs[-1] and set(rework_kwargs[-1]["topics"]) == {"adoption"}
+
+
+def test_stakeholder_search_topic_isolates_query_errors(monkeypatch):
+    """stakeholder._search_topic must capture a single query's exception instead
+    of aborting the whole topic. Other queries' results still flow through and
+    the raising query is reported in the errors list."""
+    from skala_rag.agents import stakeholder as stakeholder_module
+
+    call_log: list[str] = []
+
+    def flaky_search(query, max_results, mode, cache_dir=None):
+        call_log.append(query)
+        if "limitation" in query:
+            raise RuntimeError("flaky search")
+        return [{"url": f"https://example.org/{len(call_log)}", "title": "ok", "content": "..."}]
+
+    monkeypatch.setattr(stakeholder_module, "get_search_results", flaky_search)
+    results, calls, errors = stakeholder_module._search_topic(
+        technology="KIVI",
+        topic="competitors",
+        mode="live",
+        max_results_per_query=1,
+        queries=["KIVI stable queryA", "KIVI limitation queryB", "KIVI stable queryC"],
+    )
+
+    assert len(call_log) == 3, "every query is attempted, even after one raised"
+    assert calls == 2, "only successful searches increment the call counter"
+    assert len(errors) == 1 and errors[0]["query"] == "KIVI limitation queryB"
+    assert len(results) == 2, "the two surviving queries contribute results"
+
+
+def test_services_return_only_payload_keys(papers_dir, tmp_path):
+    """Perspective services must not leak control-plane fields (agent_status,
+    rework_requests, next, decision_log, …) in their return dicts; the
+    Supervisor owns those."""
+    settings, _ = make_settings(papers_dir, tmp_path)
+    services = create_services(settings)
+    control_fields = {
+        "agent_status",
+        "rework_requests",
+        "next",
+        "decision_log",
+        "step_count",
+        "run_id",
+        "quality_result",
+        "quality_attempts",
+    }
+    state = initial_state(mode="replay")
+    for perspective_name in ("market", "stakeholder", "domain", "trl"):
+        update = getattr(services, perspective_name)(state)
+        leaked = control_fields & set(update)
+        assert not leaked, f"{perspective_name} returned control fields: {leaked}"

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -12,9 +13,44 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
+from skala_rag.tools.budget import BudgetExhausted, WebBudget
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "web"
 load_dotenv(PROJECT_ROOT / ".env")
+
+# Shared budget: integration.services installs one WebBudget per run and the
+# live-mode helpers below check it before every external call.
+_WEB_BUDGET: WebBudget | None = None
+_WEB_BUDGET_LOCK = threading.Lock()
+
+
+def install_web_budget(budget: WebBudget | None) -> None:
+    """Register the budget consumed by this process's live search/fetch calls."""
+    global _WEB_BUDGET
+    with _WEB_BUDGET_LOCK:
+        _WEB_BUDGET = budget
+
+
+def clear_web_budget() -> None:
+    install_web_budget(None)
+
+
+def installed_web_budget() -> WebBudget | None:
+    with _WEB_BUDGET_LOCK:
+        return _WEB_BUDGET
+
+
+def _consume_search() -> None:
+    budget = installed_web_budget()
+    if budget is not None and not budget.try_search():
+        raise BudgetExhausted(f"web_search_max {budget.search_max} 소진")
+
+
+def _consume_fetch() -> None:
+    budget = installed_web_budget()
+    if budget is not None and not budget.try_fetch():
+        raise BudgetExhausted(f"fetch_max {budget.fetch_max} 소진")
 
 # 프롬프트/스키마가 바뀌면 이전 요약 캐시와 분리한다.
 SUMMARY_VERSION = "web-evidence-v2"
@@ -218,6 +254,7 @@ def get_search_results(
     _check_mode(mode)
     if mode == "replay":
         return load_search_cache(query, max_results, cache_dir)
+    _consume_search()
     return save_search_cache(
         query,
         search_web(query, max_results),
@@ -295,6 +332,7 @@ def get_source(
     _check_mode(mode)
     if mode == "replay":
         return load_source_cache(url, cache_dir)
+    _consume_fetch()
     source = save_source_cache(fetch_source(url), cache_dir)
     # redirect 후 URL이 달라져도 요청 URL로 replay 가능하게 별칭 캐시를 둔다.
     if source["url"] != url:
