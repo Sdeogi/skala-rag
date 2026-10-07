@@ -2,14 +2,18 @@
 
 Chapter order follows the assignment's reference outline: SUMMARY (<= half a
 page), 1 분석 배경, 2 기술 선정, 3 기술 개요, 4 관점별 평가, 5 시사점, 6 한계점,
-appendix of evidence, REFERENCE (only sources actually cited). Every sentence
-about a judgment carries its evidence. The same section model feeds the
-Markdown, HTML and PDF renderers so the three outputs cannot diverge.
+an appendix of evidence (the evidence and source of every citation number),
+REFERENCE (only sources actually cited). Every sentence about a judgment carries its evidence. The same
+section model feeds the Markdown, HTML and PDF renderers so the three outputs
+cannot diverge.
 
 Citations: sections are first written with raw evidence IDs (``[evidence_id]``),
-then ``number_citations`` replaces them with ``[1]``, ``[2]`` in order of first
-appearance. ``report["citation_map"]`` maps each number back to its evidence ID,
-and the appendix and REFERENCE list only what the body actually cites.
+then ``number_citations`` takes them out of the sentence and puts ``[1]``, ``[2]``
+(numbered in order of first appearance) at the end of the clause they belonged to.
+``report["citation_map"]`` maps each number back to its evidence ID, and the
+appendix and REFERENCE list only what the body actually cites. The data keeps
+one bracket per citation; adjacent numbers are written as a range (``[1]–[3]``) only when the
+PDF and HTML are drawn.
 
 Revisions: when ``state["quality_result"]`` asks for changes, the instructed
 sentences are replaced with a rewritten sentence when the caller supplies one,
@@ -34,13 +38,13 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from skala_rag.graph.schemas import FIELD_TITLES, LABELS, PERSPECTIVE_TITLES, PERSPECTIVES, TRL_DISCLAIMER
 from skala_rag.graph.state import GraphState, aggregate_metrics, collect_conflicts
@@ -75,8 +79,10 @@ LAYOUTS = (
     Layout(0, conflicts=4, agreements=2, pair_reason=320, pair_uncertainty=220, pair_condition=120, cell_reason=200, cell_conditions=140, quote=110, list_items=4),
     Layout(1, conflicts=3, agreements=1, pair_reason=260, pair_uncertainty=180, pair_condition=90, cell_reason=150, cell_conditions=100, quote=70, list_items=3),
     Layout(2, conflicts=2, agreements=0, pair_reason=200, pair_uncertainty=140, pair_condition=60, cell_reason=110, cell_conditions=70, quote=0, list_items=2),
+    Layout(3, conflicts=2, agreements=0, pair_reason=150, pair_uncertainty=100, pair_condition=40, cell_reason=80, cell_conditions=45, quote=0, list_items=1),
 )
-SMALL_SECTIONS = ("부록. 근거 목록", "REFERENCE")  # rendered in the small font
+FOOTNOTE_HEADING = "부록. 근거 목록"  # evidence and source of every citation number, placed after the body
+SMALL_SECTIONS = (FOOTNOTE_HEADING, "REFERENCE")  # rendered in the small font
 KEY_FIELDS = (("market", "adoption"), ("stakeholder", "adopter_view"), ("domain", "memory"), ("trl", "trl"))
 JUDGMENT_COLUMNS = ["기술", "항목", "판정", "판정 이유", "성립 조건", "근거"]
 EVIDENCE_COLUMNS = ["번호", "기술", "출처", "위치·유형", "인용 구절"]
@@ -111,7 +117,13 @@ FONT_CANDIDATES = (
 )
 FALLBACK_CID_FONT = "HYSMyeongJo-Medium"
 CITATION_TOKEN = re.compile(r"\[([^\[\]]+)\]")
+TOKEN_WITH_SPACE = re.compile(r"\s*\[([^\[\]]+)\]")  # a citation token with the space in front of it
+# Pretendard (SIL OFL 1.1, license in assets/fonts/OFL.txt) ships with the package so every machine renders the same PDF.
+BUNDLED_FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+BUNDLED_FONT = BUNDLED_FONT_DIR / "Pretendard-Regular.ttf"
+BUNDLED_BOLD_FONT = BUNDLED_FONT_DIR / "Pretendard-SemiBold.ttf"
 _FONT_NAME: str | None = None
+_BOLD_FONT_NAME: str | None = None
 
 
 def _redact(value: Any) -> Any:
@@ -151,23 +163,71 @@ def _citations(ids: list[str], evidence: dict[str, Any]) -> str:
     return " ".join(f"[{identifier}]" for identifier in dict.fromkeys(ids) if identifier in evidence)
 
 
-def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Replace ``[evidence_id]`` with ``[n]`` numbered by first appearance.
+_ABBREVIATIONS = ("Fig", "Figs", "Eq", "Eqs", "Sec", "Tab", "No", "vs", "al", "etc", "cf", "approx")
+_DANGLING_LABEL = re.compile(r"\s*(?:근거|출처)\s*[:：]\s*(?=[.;!?]*\s*$)")
 
-    Only bracketed tokens that are known evidence IDs are touched, so markers
+
+def _clauses(text: str) -> list[str]:
+    """Split at sentence ends and ``;`` outside brackets, keeping the punctuation with its clause."""
+    clauses: list[str] = []
+    for line in str(text).split("\n"):
+        depth = start = 0
+        for index, char in enumerate(line):
+            if char in "([":
+                depth += 1
+            elif char in ")]":
+                depth = max(depth - 1, 0)
+            elif char in ".;!?" and depth == 0 and index + 1 < len(line) and line[index + 1] == " ":
+                word = re.search(r"([A-Za-z]+)$", line[start:index])
+                if char == "." and word and word.group(1) in _ABBREVIATIONS:
+                    continue
+                clauses.append(line[start : index + 1])
+                start = index + 2
+        clauses.append(line[start:])
+    return [clause for clause in clauses if clause.strip()] or [str(text)]
+
+
+def _attach(body: str, marker: str) -> str:
+    """Put ``marker`` (``[1] [2]``) right before the clause's closing punctuation, or at its end."""
+    body = re.sub(r"\s+([.,;:!?])", r"\1", re.sub(r"\s{2,}", " ", _DANGLING_LABEL.sub("", body))).strip()
+    closing = re.search(r"([.;!?]+)$", body)
+    if closing:
+        return f"{body[: closing.start()]} {marker}{closing.group(1)}".lstrip()
+    return f"{body} {marker}".lstrip()
+
+
+def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Turn ``[evidence_id]`` into footnote markers ``(1)``, ``(2)`` numbered by first appearance.
+
+    The tokens are taken out of the sentence and the markers are placed at the end of
+    the clause (sentence or ``;`` part) they belonged to, so the text reads without
+    interruptions. A dangling ``근거:`` label left in front of the removed tokens is
+    dropped. Only bracketed tokens that are known evidence IDs are touched, so markers
     such as ``[상충]`` or ``[REDACTED]`` stay as written. Returns the rewritten
     sections and ``{"1": evidence_id, ...}``.
     """
     numbers: dict[str, str] = {}
 
-    def replace(match: re.Match[str]) -> str:
-        identifier = match.group(1)
-        if identifier not in evidence:
-            return match.group(0)
-        return f"[{numbers.setdefault(identifier, str(len(numbers) + 1))}]"
-
     def rewrite(text: Any) -> str:
-        return CITATION_TOKEN.sub(replace, str(text))
+        parts: list[tuple[str, list[str]]] = []  # (clause text without its tokens, marker numbers)
+        for clause in _clauses(str(text)):
+            found: list[str] = []
+
+            def take(match: re.Match[str]) -> str:
+                identifier = match.group(1)
+                if identifier not in evidence:
+                    return match.group(0)
+                found.append(numbers.setdefault(identifier, str(len(numbers) + 1)))
+                return ""
+
+            body = _DANGLING_LABEL.sub("", TOKEN_WITH_SPACE.sub(take, clause)).strip()
+            if found and not body.strip(" ;.!?") and parts:  # "…다. 근거: [1] [2]" keeps its markers on the sentence before
+                parts[-1][1].extend(found)
+            else:
+                parts.append((body, found))
+        return " ".join(
+            _attach(body, format_markers(found)) if found else body for body, found in parts
+        )
 
     numbered: list[dict[str, Any]] = []
     for section in sections:
@@ -186,9 +246,25 @@ REMOVED_NOTE = "(품질 평가 지적에 따라 해당 문장을 삭제했다.)"
 SENTENCE = re.compile(r".+?(?:\.(?=\s|$)|$)(?:\s*\[[^\[\]]+\])*\s*", re.S)
 
 
+def format_markers(numbers: Any) -> str:
+    """Citation markers for a set of numbers, one bracket each in ascending order: ``[1] [2] [5]``.
+
+    The section data never merges numbers into ranges, so every marker can be looked up in
+    ``citation_map`` as it is. ``compact_citations`` merges them when the PDF and HTML are drawn.
+    """
+    return " ".join(f"[{value}]" for value in sorted({int(number) for number in numbers}))
+
+
 def plain_text(text: Any) -> str:
-    """Text without bracketed tokens and extra whitespace: citation numbers and evidence IDs compare equal."""
-    return " ".join(CITATION_TOKEN.sub(" ", str(text or "")).split())
+    """Text without bracketed tokens and extra whitespace.
+
+    Citation numbers and evidence IDs compare equal, so a quote taken from the finished report (numbers at
+    the end of the clause) finds its sentence in the unnumbered sections (raw ``[evidence_id]`` tokens inside
+    the sentence).
+    """
+    plain = " ".join(CITATION_TOKEN.sub(" ", str(text or "")).split())
+    plain = re.sub(r"\s+([.,;:!?)])", r"\1", plain)
+    return re.sub(r"\s*(?:근거|출처)\s*[:：]$", "", plain)  # a "근거: [1] [2]" label is not part of the sentence it follows
 
 
 def revision_plan(state: GraphState) -> dict[str, Any] | None:
@@ -225,7 +301,14 @@ def _covered(text: str, quote: str) -> tuple[list[str], set[int]]:
     found = joined.find(target)
     if found < 0:
         return chunks, set()
-    return chunks, {index for index, start, end in spans if start < found + len(target) and end > found}
+    covered = {index for index, start, end in spans if start < found + len(target) and end > found}
+    # A chunk that only holds citation tokens (a trailing "근거: [1] [2]") belongs to the sentence before it.
+    for index in sorted(covered):
+        follower = index + 1
+        while follower < len(chunks) and not plain_text(chunks[follower]):
+            covered.add(follower)
+            follower += 1
+    return chunks, covered
 
 
 def _replace_quote(text: str, quote: str, replacement: str = "") -> tuple[str, bool]:
@@ -323,7 +406,8 @@ def _quality_limit_lines(state: GraphState) -> list[str]:
     threshold = quality.get("threshold")
     failed = []
     for key, item in (quality.get("items") or {}).items():
-        if not isinstance(item, dict) or item.get("score") is None or (threshold is not None and item["score"] >= threshold):
+        line = item.get("threshold", threshold) if isinstance(item, dict) else threshold  # an item may carry its own pass line
+        if not isinstance(item, dict) or item.get("score") is None or (line is not None and item["score"] >= line):
             continue
         reasons = "; ".join(_clip(reason, 140) for reason in (item.get("reasons") or [])[:2])
         failed.append(f"{QUALITY_ITEM_TITLES.get(key, key)} {item['score']}점" + (f"({reasons})" if reasons else ""))
@@ -440,7 +524,7 @@ def _technical_section(state: GraphState, layout: Layout = LAYOUTS[0]) -> tuple[
         if extras:
             parts.append(f"{technology}의 추가 조사 항목: " + "; ".join(extras))
         if parts:
-            paragraphs.append(". ".join(parts) + "." + (f" 근거: {cite}" if cite else ""))
+            paragraphs.append(". ".join(parts) + (f" {cite}" if cite else "") + ".")
         else:
             paragraphs.append(f"{technology}: 구조화된 기술 조사 결과 있음(세부 항목 미기재)")
         for measurement in findings.get("measurements") or []:
@@ -539,6 +623,9 @@ def _trl_details(state: GraphState) -> list[str]:
     return lines
 
 
+ENUMERATORS = "①②③④⑤⑥⑦⑧⑨"  # list numbers that cannot be mistaken for citation numbers
+
+
 def _ref_title(ref: dict[str, Any]) -> str:
     return f"{PERSPECTIVE_TITLES.get(ref['perspective'], ref['perspective'])}/{FIELD_TITLES.get(ref['field'], ref['field'])}"
 
@@ -611,7 +698,7 @@ def _synthesis_paragraphs(state: GraphState, synthesis: dict[str, Any], evidence
                 if any(conditions):
                     condition_text = f" 성립 조건: '{conditions[0] or '미기재'}' / '{conditions[1] or '미기재'}'."
             parts.append(
-                f"({index}) {header}{_clip_sentences(pair['reason'], layout.pair_reason)}{condition_text} "
+                f"{ENUMERATORS[(index - 1) % len(ENUMERATORS)]} {header}{_clip_sentences(pair['reason'], layout.pair_reason)}{condition_text} "
                 f"남은 불확실성: {_clip_sentences(pair['uncertainty'], layout.pair_uncertainty)}{(' ' + cite) if cite else ''}"
             )
         if parts:
@@ -713,12 +800,20 @@ def _limitations(state: GraphState, synthesis: dict[str, Any]) -> list[str]:
     return paragraphs
 
 
-def _evidence_table(evidence: dict[str, Any], citation_map: dict[str, str], source_labels: dict[str, str], layout: Layout = LAYOUTS[0]) -> dict[str, Any]:
-    """Appendix table of cited evidence only, in citation-number order."""
+def _evidence_table(
+    evidence: dict[str, Any],
+    citation_map: dict[str, str],
+    source_labels: dict[str, str],
+    layout: Layout = LAYOUTS[0],
+    sources: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Appendix table of cited evidence only, in citation-number order; each row names its source ([R#] → REFERENCE)."""
     rows: list[list[str]] = []
     for number, evidence_id in sorted(citation_map.items(), key=lambda pair: int(pair[0])):
         item = evidence[evidence_id]
         source = source_labels.get(item.get("source_id"))
+        source_record = (sources or {}).get(item.get("source_id")) or {}
+        source_name = _clip(source_record.get("author_or_org") or _site_name(source_record.get("url")), 24)
         quote = _clip(item.get("quote") or item.get("claim") or "인용 구절 미기재", layout.quote) if layout.quote else ""
         if item.get("speaker"):
             speaker = f"발언 주체 {item['speaker']}" + (f"({item['stated_at']})" if item.get("stated_at") else "")
@@ -727,7 +822,7 @@ def _evidence_table(evidence: dict[str, Any], citation_map: dict[str, str], sour
             [
                 f"[{number}]",
                 str(item.get("technology") or "기술 미상"),
-                f"[{source}]" if source else "미등록",
+                (f"[{source}]" + (f" {source_name}" if source_name else "")) if source else "미등록",
                 f"{item.get('location') or '위치 미기재'} / {item.get('claim_type', '유형 미기재')}",
                 quote,
             ]
@@ -787,7 +882,7 @@ def _compose(
             "4. 관점별 평가",
             [
                 "네 관점의 판정을 기술별·항목별로 정리했다. 판정 라벨은 Rubric에서 정의한 집합 안에서만 고르며, 근거를 찾지 못한 항목은 "
-                "미확인으로 남긴다. 근거 번호는 부록의 근거 목록과 대응하고, 근거 검사를 통과하지 못한 판정에는 (근거 미확인)을 표시했다."
+                "미확인으로 남긴다. 본문의 [번호]는 부록 근거 목록의 근거와 출처에 대응하고, 근거 검사를 통과하지 못한 판정에는 (근거 미확인)을 표시했다."
             ],
         )
     )
@@ -819,8 +914,8 @@ def _compose(
         )
     )
     source_labels = {source_id: f"R{index}" for index, source_id in enumerate(used_source_ids, start=1)}
-    appendix = _evidence_table(evidence, citation_map, source_labels, layout)
-    sections.append(_section("부록. 근거 목록", [] if appendix["rows"] else ["인용된 근거 없음"], appendix))
+    footnotes = _evidence_table(evidence, citation_map, source_labels, layout, sources)
+    sections.append(_section(FOOTNOTE_HEADING, [] if footnotes["rows"] else ["인용된 근거 없음"], footnotes))
     references = [format_reference(source_labels[source_id], sources[source_id]) for source_id in used_source_ids]
     sections.append(_section("REFERENCE", references or ["검증된 출처 없음"]))
 
@@ -888,13 +983,14 @@ def render_markdown(sections: list[dict[str, Any]]) -> str:
 
 
 def _register_korean_font() -> str:
-    """Embed a Korean TrueType font when one is available; fall back to the CID font."""
+    """Embed the body font: ``RAG_PDF_FONT``, then the bundled Pretendard, then system fonts, then the CID font."""
     global _FONT_NAME
     if _FONT_NAME:
         return _FONT_NAME
     candidates: list[str] = []
     if os.environ.get("RAG_PDF_FONT"):
         candidates.append(os.environ["RAG_PDF_FONT"])
+    candidates.append(str(BUNDLED_FONT))
     candidates.extend(FONT_CANDIDATES)
     candidates.extend(glob.glob("/System/Library/AssetsV2/com_apple_MobileAsset_Font*/*/AssetData/NanumGothic.ttc"))
     for candidate in candidates:
@@ -916,66 +1012,164 @@ def _register_korean_font() -> str:
     return _FONT_NAME
 
 
+def _register_bold_font() -> str:
+    """Heading weight of the bundled font; the body font when it is unavailable or the body font was overridden."""
+    global _BOLD_FONT_NAME
+    if _BOLD_FONT_NAME is not None:
+        return _BOLD_FONT_NAME
+    body = _register_korean_font()
+    _BOLD_FONT_NAME = body
+    if not os.environ.get("RAG_PDF_FONT") and BUNDLED_BOLD_FONT.is_file():
+        try:
+            pdfmetrics.registerFont(TTFont("KoreanBold", str(BUNDLED_BOLD_FONT)))
+            _BOLD_FONT_NAME = "KoreanBold"
+        except Exception as exc:
+            logger.warning("PDF heading font %s unusable: %s", BUNDLED_BOLD_FONT, exc)
+    return _BOLD_FONT_NAME
+
+
 def _column_weights(columns: list[str]) -> list[float]:
     weights = {
         "기술": 1.0, "항목": 1.3, "판정": 1.3, "판정 이유": 2.6, "성립 조건": 2.0, "근거": 1.4,
-        "번호": 0.6, "출처": 0.6, "위치·유형": 1.6, "인용 구절": 5.0,
+        "번호": 0.6, "출처": 1.2, "위치·유형": 1.6, "인용 구절": 4.4,
         "비교 축": 1.0, "KIVI (SW)": 2.5, "InfiniGen (HW)": 2.5,
         "지표": 1.2, "값": 1.0, "비교 기준": 1.2, "측정 조건": 2.4, "출처 위치": 1.2,
     }
     return [weights.get(column, 1.5) for column in columns]
 
 
+TABLE_CAPTIONS = {
+    "2. 기술 선정": "두 기술의 비교 축",
+    "3. 기술 개요": "논문이 보고한 성능 수치",
+    "부록. 근거 목록": "본문에 인용한 근거",
+}
+META_PLACEHOLDER = "모드 replay · 생성 방식 deterministic · 실행 시각 0000-00-00T00:00:00"  # same length as a real line, for page counting
+
+
+CITATION_RUN = re.compile(r"\[\d+\](?:\s*\[\d+\])+")
+
+
+def compact_citations(text: Any) -> str:
+    """Write adjacent citation numbers the IEEE way for display: ``[1] [2] [3] [5]`` -> ``[1]–[3], [5]``.
+
+    Every number keeps its own brackets; three or more consecutive numbers become a
+    range and the rest are separated by commas (``[1], [2]``). Rendering only. The section data keeps one bracket per citation so each
+    number can be looked up in ``citation_map``.
+    """
+
+    def merge(match: re.Match[str]) -> str:
+        numbers = sorted({int(number) for number in re.findall(r"\d+", match.group(0))})
+        parts: list[str] = []
+        start = previous = numbers[0]
+        for number in numbers[1:] + [None]:
+            if number is not None and number == previous + 1:
+                previous = number
+                continue
+            if previous - start >= 2:
+                parts.append(f"[{start}]–[{previous}]")
+            else:
+                parts.extend(f"[{value}]" for value in range(start, previous + 1))
+            if number is not None:
+                start = previous = number
+        return ", ".join(parts)
+
+    return CITATION_RUN.sub(merge, str(text))
+
+
+def table_captions(sections: list[dict[str, Any]]) -> dict[int, str]:
+    """``{section index: "표 n. ..."}`` for every section with a table. Rendering only: the section data is not changed."""
+    captions: dict[int, str] = {}
+    for index, section in enumerate(sections):
+        table = section.get("table")
+        if not table or not table.get("rows"):
+            continue
+        heading = section["heading"]
+        title = TABLE_CAPTIONS.get(heading) or re.sub(r"^[\d.]+\s*", "", heading) + " 관점 판정"
+        captions[index] = f"표 {len(captions) + 1}. {title}"
+    return captions
+
+
 def pdf_page_count(report: dict[str, Any]) -> int:
     """Pages the report takes as a PDF (rendered in memory)."""
-    return _write_pdf(io.BytesIO(), report, "")[1]
+    return _write_pdf(io.BytesIO(), report, META_PLACEHOLDER, as_of="0000-00-00")[1]
 
 
-def _write_pdf(target: Path | io.BytesIO, report: dict[str, Any], meta: str) -> tuple[str, int]:
-    """Render the PDF to a path or buffer. Returns ``(font name, page count)``."""
+def _page_number(canvas: Any, document: Any) -> None:
+    canvas.saveState()
+    canvas.setFont(_register_korean_font(), 8)
+    canvas.setFillColor(colors.HexColor("#555555"))
+    canvas.drawCentredString(A4[0] / 2, 26, str(document.page))
+    canvas.restoreState()
+
+
+def _write_pdf(target: Path | io.BytesIO, report: dict[str, Any], meta: str, as_of: str = "") -> tuple[str, int]:
+    """Render the PDF to a path or buffer. Returns ``(font name, page count)``.
+
+    Report layout: one font family (regular body, heavier headings), the title
+    with the reference date, captioned tables ruled with horizontal lines only,
+    page numbers, and the run information (``meta``) in small print at the end.
+    """
     font = _register_korean_font()
+    bold = _register_bold_font()
     base = getSampleStyleSheet()["BodyText"]
-    body = ParagraphStyle("KoreanBody", parent=base, fontName=font, fontSize=9.5, leading=15, wordWrap="CJK", spaceAfter=6)
-    cell = ParagraphStyle("KoreanCell", parent=body, fontSize=7.5, leading=10, spaceAfter=0)
-    small = ParagraphStyle("KoreanSmall", parent=body, fontSize=7.5, leading=10.5, spaceAfter=3)
-    heading1 = ParagraphStyle("KoreanH1", parent=body, fontSize=14, leading=20, spaceBefore=14, spaceAfter=8)
-    heading2 = ParagraphStyle("KoreanH2", parent=body, fontSize=11.5, leading=16, spaceBefore=10, spaceAfter=6)
-    title_style = ParagraphStyle("KoreanTitle", parent=heading1, fontSize=17, leading=24, alignment=TA_CENTER, spaceAfter=4)
-    meta_style = ParagraphStyle("KoreanMeta", parent=body, fontSize=8, alignment=TA_CENTER, textColor=colors.HexColor("#555555"), spaceAfter=12)
-    story: list[Any] = [Paragraph(escape(report["title"]), title_style), Paragraph(escape(meta), meta_style)]
+    ink = colors.HexColor("#1f2933")
+    body = ParagraphStyle("KoreanBody", parent=base, fontName=font, fontSize=9.3, leading=16, wordWrap="CJK", alignment=TA_JUSTIFY, textColor=ink, spaceAfter=4)
+    cell = ParagraphStyle("KoreanCell", parent=base, fontName=font, fontSize=7.5, leading=10.5, wordWrap="CJK", textColor=ink, spaceAfter=0)
+    head_cell = ParagraphStyle("KoreanHeadCell", parent=cell, fontName=bold)
+    small = ParagraphStyle("KoreanSmall", parent=cell, leading=10.5, spaceAfter=3)
+    caption = ParagraphStyle("KoreanCaption", parent=cell, fontName=bold, fontSize=8, leading=11, spaceBefore=4, spaceAfter=3)
+    heading1 = ParagraphStyle("KoreanH1", parent=cell, fontName=bold, fontSize=13.5, leading=19, spaceBefore=14, spaceAfter=7)
+    heading2 = ParagraphStyle("KoreanH2", parent=cell, fontName=bold, fontSize=11, leading=16, spaceBefore=9, spaceAfter=5)
+    title_style = ParagraphStyle("KoreanTitle", parent=cell, fontName=bold, fontSize=17, leading=24, alignment=TA_CENTER, spaceAfter=4)
+    date_style = ParagraphStyle("KoreanDate", parent=cell, fontSize=8.5, leading=12, alignment=TA_CENTER, textColor=colors.HexColor("#555555"), spaceAfter=10)
+    meta_style = ParagraphStyle("KoreanMeta", parent=cell, fontSize=7, leading=10, textColor=colors.HexColor("#777777"), spaceBefore=8)
+    rule = colors.HexColor("#1f2933")
+    story: list[Any] = [Paragraph(escape(report["title"]), title_style)]
+    if as_of:
+        story.append(Paragraph(escape(f"기준일 {as_of}"), date_style))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=rule, spaceAfter=6))
     width = A4[0] - 90
-    for section in report["sections"]:
+    captions = table_captions(report["sections"])
+    for index, section in enumerate(report["sections"]):
         story.append(Paragraph(escape(section["heading"]), heading1 if section.get("level", 1) == 1 else heading2))
         style = small if section["heading"] in SMALL_SECTIONS else body
         for paragraph in section.get("paragraphs", []):
-            story.append(Paragraph(escape(str(paragraph)).replace("\n", "<br/>"), style))
+            story.append(Paragraph(escape(compact_citations(paragraph)).replace("\n", "<br/>"), style))
         table = section.get("table")
         if table and table.get("rows"):
             weights = _column_weights(table["columns"])
             widths = [width * weight / sum(weights) for weight in weights]
-            data = [[Paragraph(escape(str(column)), cell) for column in table["columns"]]]
-            data.extend([Paragraph(escape(str(value)), cell) for value in row] for row in table["rows"])
+            data = [[Paragraph(escape(str(column)), head_cell) for column in table["columns"]]]
+            data.extend([Paragraph(escape(compact_citations(value)), cell) for value in row] for row in table["rows"])
             grid = Table(data, colWidths=widths, repeatRows=1)
             grid.setStyle(
                 TableStyle(
                     [
-                        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#9aa4b2")),
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8edf3")),
+                        # Horizontal rules only: heavy above and below the table, medium under the header, hairlines between rows.
+                        ("LINEABOVE", (0, 0), (-1, 0), 0.9, rule),
+                        ("LINEBELOW", (0, 0), (-1, 0), 0.5, rule),
+                        ("LINEBELOW", (0, 1), (-1, -2), 0.25, colors.HexColor("#c5ccd4")),
+                        ("LINEBELOW", (0, -1), (-1, -1), 0.9, rule),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f5f7")),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
                         ("LEFTPADDING", (0, 0), (-1, -1), 3),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                        ("TOPPADDING", (0, 0), (-1, -1), 2),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
                     ]
                 )
             )
+            story.append(Paragraph(escape(captions[index]), caption))
             story.append(grid)
             story.append(Spacer(1, 6))
         story.append(Spacer(1, 4))
+    if meta:
+        story.append(HRFlowable(width="100%", thickness=0.4, color=colors.HexColor("#c5ccd4"), spaceBefore=6))
+        story.append(Paragraph(escape(f"생성 정보: {meta}"), meta_style))
     document = SimpleDocTemplate(
-        target if isinstance(target, io.BytesIO) else str(target), pagesize=A4, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=45, title=report["title"]
+        target if isinstance(target, io.BytesIO) else str(target), pagesize=A4, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=48, title=report["title"]
     )
-    document.build(story)
+    document.build(story, onFirstPage=_page_number, onLaterPages=_page_number)
     return font, document.page
 
 
@@ -989,8 +1183,9 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
     check = state.get("evidence_check") or {}
     pdf_font: str | None = None
     pdf_pages: int | None = None
+    as_of = str(config.get("as_of") or "")
     meta = (
-        f"모드 {config['mode']} · 생성 방식 {(report or {}).get('generation_mode', '-')} · 기준일 {config.get('as_of') or '미지정'} · "
+        f"모드 {config['mode']} · 생성 방식 {(report or {}).get('generation_mode', '-')} · "
         f"실행 시각 {str(state.get('started_at', ''))[:19]}"
     )
     if report:
@@ -998,14 +1193,17 @@ def save_outputs(state: GraphState, output_dir: Path | str, *, report_name: str 
         md_path.write_text(report["markdown"], encoding="utf-8")
         artifacts["markdown"] = str(md_path)
         environment = Environment(loader=FileSystemLoader(Path(__file__).resolve().parents[1] / "templates"), autoescape=select_autoescape(["html"]))
+        environment.filters["cite"] = compact_citations
         html_path = output_dir / f"{report_name}.html"
         html_path.write_text(
-            environment.get_template("report.html.j2").render(title=report.get("title", report_name), meta=meta, sections=report["sections"]),
+            environment.get_template("report.html.j2").render(
+                title=report.get("title", report_name), meta=meta, as_of=as_of, sections=report["sections"], captions=table_captions(report["sections"])
+            ),
             encoding="utf-8",
         )
         artifacts["html"] = str(html_path)
         pdf_path = output_dir / f"{report_name}.pdf"
-        pdf_font, pdf_pages = _write_pdf(pdf_path, report, meta)
+        pdf_font, pdf_pages = _write_pdf(pdf_path, report, meta, as_of)
         artifacts["pdf"] = str(pdf_path)
     source_path = output_dir / "sources.json"
     source_path.write_text(json.dumps(_redact(state.get("sources", {})), ensure_ascii=False, indent=2), encoding="utf-8")

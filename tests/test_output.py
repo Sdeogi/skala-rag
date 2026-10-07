@@ -1,7 +1,7 @@
 import os
 
 from skala_rag.agents.korean import josa
-from skala_rag.agents.report import LAYOUTS, MAX_PDF_PAGES, SUMMARY_LIMIT, _clip_sentences, _compose, build_report, format_reference, number_citations, pdf_page_count, save_outputs
+from skala_rag.agents.report import compact_citations, LAYOUTS, MAX_PDF_PAGES, SUMMARY_LIMIT, _clip_sentences, _compose, build_report, format_reference, number_citations, pdf_page_count, save_outputs
 from skala_rag.graph.schemas import LABELS
 from skala_rag.agents.synthesis import synthesize
 from skala_rag.graph.workflow import initial_state
@@ -76,8 +76,9 @@ def test_citations_are_numbered_by_first_appearance_and_only_cited_items_are_lis
     report = build_report(state)
     assert report["citation_map"] == {"1": "e2", "2": "e1"}  # order of first appearance (SUMMARY cites e2 first)
     assert report["used_source_ids"] == ["s2", "s1"]
-    appendix = next(section for section in report["sections"] if section["heading"].startswith("부록"))["table"]["rows"]
-    assert [row[:3] for row in appendix] == [["[1]", "KIVI", "[R1]"], ["[2]", "KIVI", "[R2]"]]
+    footnotes = next(section for section in report["sections"] if section["heading"].startswith("부록"))["table"]["rows"]
+    assert [row[:2] for row in footnotes] == [["[1]", "KIVI"], ["[2]", "KIVI"]]
+    assert footnotes[0][2].startswith("[R1] ") and footnotes[1][2].startswith("[R2] ")  # each footnote names its source
     references = report["sections"][-1]["paragraphs"]
     assert len(references) == 2 and references[0].startswith("[R1] ") and references[1].startswith("[R2] Liu, Z. et al.(2024)")
     assert "never cited" not in report["markdown"] and "unused" not in report["markdown"]
@@ -89,8 +90,8 @@ def test_citations_are_numbered_by_first_appearance_and_only_cited_items_are_lis
 def test_number_citations_leaves_non_evidence_brackets_untouched():
     sections = [{"heading": "h", "paragraphs": ["[상충] 본문 [e9] [REDACTED] [unknown]"], "table": {"columns": ["c"], "rows": [["[e1] [e9]"]]}, "level": 1}]
     numbered, citation_map = number_citations(sections, {"e1": {}, "e9": {}})
-    assert numbered[0]["paragraphs"] == ["[상충] 본문 [1] [REDACTED] [unknown]"]
-    assert numbered[0]["table"]["rows"] == [["[2] [1]"]] and citation_map == {"1": "e9", "2": "e1"}
+    assert numbered[0]["paragraphs"] == ["[상충] 본문 [REDACTED] [unknown] [1]"]  # the number moves to the end of the clause
+    assert numbered[0]["table"]["rows"] == [["[1] [2]"]] and citation_map == {"1": "e9", "2": "e1"}
     assert sections[0]["paragraphs"] == ["[상충] 본문 [e9] [REDACTED] [unknown]"]  # input is not mutated
 
 
@@ -102,8 +103,8 @@ def test_trl_stage_details_and_summary_limit():
     trl_section = next(section for section in report["sections"] if section["heading"] == "4.4 기술 성숙도")
     assert any("TRL 5 미충족 (PR 미확인)" in p and "vLLM 통합 PR" in p for p in trl_section["paragraphs"])
     assert len(report["sections"][0]["paragraphs"][0]) <= SUMMARY_LIMIT
-    appendix = next(section for section in report["sections"] if section["heading"].startswith("부록"))
-    assert all(len(row[-1]) <= LAYOUTS[0].quote for row in appendix["table"]["rows"])
+    footnotes = next(section for section in report["sections"] if section["heading"].startswith("부록"))
+    assert all(len(row[-1]) <= LAYOUTS[0].quote for row in footnotes["table"]["rows"])
 
 
 def test_report_redacts_secrets_and_private_contact_details():
@@ -206,7 +207,7 @@ def test_chapter_five_covers_both_technologies_shared_patterns_and_open_points()
     paragraphs = next(section for section in _compose(state, None, LAYOUTS[0])["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
     conflicts = [p for p in paragraphs if "관점 간 평가가 엇갈리는 지점" in p]
     assert [p.split("에서")[0] for p in conflicts] == ["KIVI", "InfiniGen"]  # neither technology fills the chapter alone
-    assert all("(2) " in p and "(3) " not in p and p.count("성립 조건은 각각") == LAYOUTS[0].conflicts // 2 for p in conflicts)
+    assert all("② " in p and "③ " not in p and "(1) " not in p and p.count("성립 조건은 각각") == LAYOUTS[0].conflicts // 2 for p in conflicts)
     assert any(p.startswith("두 기술에 공통으로 나타나는 패턴") for p in paragraphs)
     closing = paragraphs[-1]
     assert closing.startswith("클라우드 LLM 서빙에 적용하기 전에 확인이 필요한 지점")
@@ -218,7 +219,7 @@ def test_technical_overview_is_one_paragraph_per_technology():
     state = base_state()
     state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 양자화한다.", "experiment_conditions": ["Llama-2-7B.", "A100"], "performance": ["2.6x memory"], "limitations": ["긴 문맥 미검증"], "evidence_ids": ["e1"]}}
     section = next(section for section in build_report(state)["sections"] if section["heading"] == "3. 기술 개요")
-    assert section["paragraphs"][0] == "KIVI의 핵심 원리: KV를 2비트로 양자화한다. KIVI의 실험 조건: Llama-2-7B; A100. KIVI의 성능 보고: 2.6x memory. KIVI의 한계: 긴 문맥 미검증. 근거: [1]"
+    assert section["paragraphs"][0] == "KIVI의 핵심 원리: KV를 2비트로 양자화한다. KIVI의 실험 조건: Llama-2-7B; A100. KIVI의 성능 보고: 2.6x memory. KIVI의 한계: 긴 문맥 미검증 [1]."
     assert section["paragraphs"][1] == "InfiniGen: 기술 조사 결과 미확인"
 
 
@@ -267,6 +268,28 @@ def test_save_outputs_uses_report_name_and_reports_pdf_font(tmp_path):
     assert f'"pdf_font": "{expected_font}"' in manifest
     assert '"pdf_pages": ' in manifest and '"layout": {' in manifest
     assert "<table>" in (tmp_path / "RAG-Output_test.html").read_text(encoding="utf-8")
+
+
+def test_markers_sit_at_the_end_of_their_clause_not_inside_the_sentence():
+    sections = [
+        {
+            "heading": "h",
+            "paragraphs": [
+                "KIVI는 [e1] 2비트로 압축하되 [e2] 정확도는 유지했다. InfiniGen은 CPU로 내보낸다 [e3]. 근거: [e1] [e2]",
+                "TRL 3 충족 [e1]; TRL 4 충족 [e2] [e3]; TRL 5 미충족 (통합 근거 미확인; 추가 확인 필요).",
+                "Fig. 3 [e1]에서 보듯 증가한다.",
+            ],
+            "table": None,
+            "level": 1,
+        }
+    ]
+    numbered, citation_map = number_citations(sections, {"e1": {}, "e2": {}, "e3": {}})
+    assert numbered[0]["paragraphs"] == [
+        "KIVI는 2비트로 압축하되 정확도는 유지했다 [1] [2]. InfiniGen은 CPU로 내보낸다 [1] [2] [3].",  # trailing "근거: …" joins the last sentence; one bracket per number
+        "TRL 3 충족 [1]; TRL 4 충족 [2] [3]; TRL 5 미충족 (통합 근거 미확인; 추가 확인 필요).",  # one marker group per ";" clause, none inside brackets
+        "Fig. 3에서 보듯 증가한다 [1].",  # an abbreviation's period does not end the clause
+    ]
+    assert citation_map == {"1": "e1", "2": "e2", "3": "e3"}
 
 
 def quality(action, instructions=(), **items):
@@ -355,3 +378,41 @@ def test_accept_with_limits_lists_failed_quality_items_and_leaves_the_body_alone
     assert all(before[heading] == after[heading] for heading in before if heading != "6. 한계점")
     state["quality_result"] = {**quality("pass"), "passed": True}
     assert build_report(state)["revision"] == {"number": 0}
+
+
+def test_adjacent_citations_are_merged_for_display_only(tmp_path):
+    assert compact_citations("보고됐다 [1] [2] [3] [4] [5] [6] [7] [8].") == "보고됐다 [1]–[8]."
+    assert compact_citations("[1] [3] [5] [6] [7]") == "[1], [3], [5]–[7]"
+    assert compact_citations("[2][9] 그리고 [4] [5]") == "[2], [9] 그리고 [4], [5]"
+    assert compact_citations("단독 [3], 근거 ID [e1] [e2], 표지 [R1] [R2]") == "단독 [3], 근거 ID [e1] [e2], 표지 [R1] [R2]"
+    state = revisable_state()
+    state["market_analysis"]["technologies"]["KIVI"]["adoption"]["evidence_ids"] = ["e1", "e2"]
+    full = initial_state(mode="replay")
+    full.update(state)
+    full["run_config"] = initial_state(mode="replay")["run_config"]
+    full["report"] = build_report(full)
+    adoption = next(row for row in sections_by_heading(full["report"])["4.1 시장성"]["table"]["rows"] if row[1] == "상용화와 채택 현황")
+    assert adoption[-1] == "[1] [2]"  # the data keeps one bracket per citation
+    save_outputs(full, tmp_path)
+    assert "[1], [2]" in (tmp_path / "report.html").read_text(encoding="utf-8") and "[1] [2]" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_long_citation_runs_stay_one_bracket_each_in_the_data_and_merge_only_when_drawn():
+    from skala_rag.agents.report import format_markers, plain_text
+
+    assert [format_markers(numbers) for numbers in ([2, 1], [1, 2, 3], [1, 3, 5])] == ["[1] [2]", "[1] [2] [3]", "[1] [3] [5]"]
+    ids = {f"e{number}": {} for number in range(1, 12)}
+    sections = [
+        {
+            "heading": "h",
+            "paragraphs": ["KIVI는 보고됐다 " + " ".join(f"[e{number}]" for number in range(1, 8)) + ".", "짧은 인용이다 [e1] [e2]."],
+            "table": {"columns": ["근거"], "rows": [[" ".join(f"[e{number}]" for number in range(1, 6))], ["[e9] [e11]"]]},
+            "level": 1,
+        }
+    ]
+    numbered, citation_map = number_citations(sections, ids)
+    assert numbered[0]["paragraphs"] == ["KIVI는 보고됐다 [1] [2] [3] [4] [5] [6] [7].", "짧은 인용이다 [1] [2]."]
+    assert numbered[0]["table"]["rows"] == [["[1] [2] [3] [4] [5]"], ["[8] [9]"]]
+    assert [compact_citations(text) for text in numbered[0]["paragraphs"]] == ["KIVI는 보고됐다 [1]–[7].", "짧은 인용이다 [1], [2]."]
+    # 번호 매긴 문장과 번호 매기기 전 문장이 같은 글로 비교된다(수정 지시의 quote 대조)
+    assert plain_text("KIVI는 보고됐다 [1] [2] [3].") == plain_text("KIVI는 보고됐다 [e1] [e2] [e3].") == "KIVI는 보고됐다."

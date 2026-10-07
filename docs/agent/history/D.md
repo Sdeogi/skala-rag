@@ -171,3 +171,107 @@
 - `revision_plan`은 `action == "pass"`와 평가 결과 없음을 똑같이 "수정 없음"으로 다룬다. 이 판정을 바꾸면 첫 보고서 생성 때 이전 판을 찾으려다 실패한다
 
 **확인**: pytest 83 passed, `app.py --mode replay --fixture` 실행 정상
+
+## 2026-10-07 14:57 · sup/report-layout · deogi
+
+**무엇을**: 보고서 PDF·HTML의 조판을 보고서 양식으로 변경. 문장 내용과 섹션 데이터 구조는 그대로
+
+**왜**: 제목 아래에 실행 정보(모드, 생성 방식, 실행 시각)가 찍히고, 격자 표와 "근거: [1]" 표지, 줄줄이 나열된 인용 번호(`[1] [2] … [8]`) 때문에 프로그램 출력물처럼 보이고 읽기 어려웠다. 제출용 보고서로 읽히도록 조판만 바꾼다. 글꼴은 컴퓨터마다 달라지지 않도록 패키지에 포함한다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py`
+  - `_write_pdf(target, report, meta, as_of="")`: `as_of` 인자 추가. 글꼴은 Pretendard 한 종류(본문·표 Regular, 제목·표 머리행·표 제목 SemiBold), 본문 양쪽 정렬, 줄 간격 16pt. 제목 아래에는 기준일만 두고, 실행 정보(`meta`)는 문서 맨 끝에 작은 글씨("생성 정보: …")로 옮김. 표는 세로줄 없이 가로줄만(위·아래 굵게, 머리행 아래 중간, 행 사이 가는 선). 쪽 번호 추가(`_page_number`)
+  - `BUNDLED_FONT`, `BUNDLED_BOLD_FONT`, `_register_bold_font` 추가: 패키지에 포함한 Pretendard를 시스템 글꼴보다 먼저 사용. 순서는 `RAG_PDF_FONT` → 포함 글꼴 → 시스템 글꼴 → CID 글꼴. `RAG_PDF_FONT`로 본문 글꼴을 바꾸면 제목도 그 글꼴을 씀
+  - `compact_citations` 추가: 그릴 때만 이웃한 인용 번호를 묶음(`[1] [2] [3] [5]` → `[1–3, 5]`). PDF와 HTML에 적용, 섹션 데이터와 Markdown은 번호마다 대괄호 하나 그대로
+  - `table_captions(sections)`, `TABLE_CAPTIONS` 추가: 표가 있는 섹션에 "표 n. …" 제목을 렌더링 단계에서 붙임
+  - `pdf_page_count`: 실제 렌더링과 같은 줄 수가 되도록 `META_PLACEHOLDER`와 기준일을 넣어 쪽수를 셈
+  - `LAYOUTS`에 수준 3 추가(분량 여유분)
+  - `_technical_section`: 문단 끝의 "근거: [..]" 표지를 없애고 인용을 마지막 문장 뒤(마침표 앞)에 붙임
+  - `save_outputs`: `meta`에서 기준일을 빼 `as_of`로 따로 전달, HTML 템플릿에 `as_of`·`captions` 전달
+- `src/skala_rag/templates/report.html.j2` — PDF와 같은 구성(Pretendard, 기준일, 표 제목, 가로줄 표, 인용 번호 묶기, 맨 끝 생성 정보). 목차 `<nav>` 삭제
+- `src/skala_rag/assets/fonts/` (신규) — `Pretendard-Regular.ttf`, `Pretendard-SemiBold.ttf`(Pretendard 1.3.9 배포본의 TTF), `OFL.txt`(SIL Open Font License 1.1 전문)
+- `tests/test_output.py` — 3장 문단 기대 문자열 한 곳 수정, 인용 번호 묶기 테스트 추가
+
+**남의 파일**: 없음
+
+**인터페이스 영향**:
+- `report["sections"]`의 구조와 장 제목은 그대로다. 표 제목, 글꼴, 쪽 번호, 생성 정보는 렌더링 단계에서만 붙는다(Markdown 출력에는 없음)
+- 3장 문단 끝이 "… 근거: [1]"에서 "… [1]."로 바뀜. 항목 표지(`KIVI의 성능 보고:` 등)는 그대로
+
+**충돌 시 지켜야 할 것**:
+- 표 제목·쪽 번호·생성 정보를 `report["sections"]` 데이터에 넣지 않는다. 섹션 데이터를 읽는 다른 코드(품질 평가)가 본문으로 오인한다
+- `pdf_page_count`와 `save_outputs`는 같은 `_write_pdf`를 같은 줄 수의 `meta`·`as_of`로 불러야 한다. 한쪽만 바꾸면 10쪽 맞춤이 실제 PDF와 어긋난다
+- 제목 아래에 작성자·실행 정보를 다시 넣지 않는다(작성자 표기는 과제 요구 사항이 아니어서 넣지 않기로 함)
+- 인용 번호 묶기를 `report["sections"]` 데이터에 적용하지 않는다. `[1–3]`은 번호 대응표(`citation_map`)에서 찾을 수 없어 없는 근거로 처리된다
+- `assets/fonts/OFL.txt`를 글꼴과 함께 둔다. 라이선스가 글꼴 재배포 시 라이선스 문서 동봉을 요구한다
+- 글꼴 파일은 TTF여야 한다. PDF 도구(reportlab)가 OTF(CFF 윤곽선)를 넣지 못한다
+
+**확인**: pytest 84 passed. fixture 5쪽, 근거 60건·출처 20개 9쪽(수준 1), 근거 90건·출처 30개 10쪽(수준 2). PDF 육안 확인
+
+## 2026-10-07 15:22 · sup/merge-quality · deogi · 충돌 해결
+
+**병합**: `origin/sup/quality`(9888c7d, 품질 평가기) → `sup/merge-quality`(`supervisor` 6ca072a에서 분기). `sup/quality` 브랜치 자체는 건드리지 않았다.
+
+**배경**: 품질 평가기 브랜치가 보고서 작성기(`report.py`, `llm_output.py`)의 인용 방식을 바꿨고, 같은 시기에 `supervisor`에는 보고서 조판 변경이 들어갔다. 같은 문제(문장 중간에 끼는 인용, 길게 늘어지는 인용 번호)를 양쪽이 다르게 풀었다. 품질 평가기 쪽 이유는 `docs/agent/history/C.md`의 14:34·15:12 항목, 조판 쪽 이유는 이 파일의 `sup/report-layout` 항목에 있다.
+
+**합의한 방식** (양쪽 변경을 모두 살림):
+- 표기는 `[n]`을 쓴다(공학 논문 관례). 5장 항목 번호 `(1)`과 인용 `(1)`이 겹쳐 읽는 사람이 헷갈리는 문제가 없어진다
+- 인용을 문장 중간에서 빼서 절 끝(마침표 앞)에 붙이는 것, 문단 끝 `근거:` 꼬리표를 지우는 것은 품질 평가기 브랜치의 방식을 그대로 받는다
+- 보고서 데이터는 번호마다 대괄호 하나(`[1] [2] [3]`)를 유지하고, 범위로 묶는 것(`[1–3]`)은 PDF·HTML을 그릴 때만 한다. 평가기가 번호를 하나씩 대응표에서 찾을 수 있다
+- 근거 목록 절의 이름은 "부록. 근거 목록"을 유지한다(평가기는 "각주"와 "부록"으로 시작하는 제목을 모두 읽는다). 표의 출처 칸에 출처 이름을 함께 적는 것은 품질 평가기 브랜치의 변경을 받는다
+
+**충돌 파일과 해결**:
+- `src/skala_rag/agents/report.py` (충돌 1곳 + 자동 병합된 부분의 의미 조정)
+  - 충돌: 같은 자리에 한쪽은 글꼴 상수(`BUNDLED_FONT` 등), 다른 쪽은 `TOKEN_WITH_SPACE`를 추가 → 둘 다 남김
+  - `number_citations`: 품질 평가기 브랜치의 절 끝 배치(`_clauses`, `_attach`, `_DANGLING_LABEL`)를 그대로 사용. `_attach`는 표시 앞에 공백을 두고(`…했다 [1] [2].`), 인용만 있는 표 칸에서는 앞 공백을 없앰
+  - `format_markers`: `(1)-(7)` 범위 대신 `[1] [2] … [7]`을 반환. 범위 묶기는 `compact_citations`(렌더링)가 맡음
+  - `FOOTNOTE_MARKER`, `expand_markers`, `RANGE_MIN` 삭제: 데이터에 `(n)` 표시와 범위가 없어 읽을 대상이 없다. `plain_text`는 대괄호 토큰 제거, 문장 부호 앞 공백 정리, `근거:` 꼬리표 제거를 유지
+  - `FOOTNOTE_HEADING` 상수는 유지하되 값은 "부록. 근거 목록". 4장 안내 문구와 이해관계자 관점 문구도 "부록 근거 목록"으로
+  - `_evidence_table`: `sources` 인자와 출처 이름 칸, `_column_weights`의 `출처` 1.2·`인용 구절` 4.4는 품질 평가기 브랜치 것을 유지. 번호 칸은 `[n]`
+  - `_covered`의 "인용만 있는 조각은 앞 문장에 속한다" 처리, `_quality_limit_lines`의 항목별 통과 기준은 품질 평가기 브랜치 것을 유지
+  - 5장 항목 번호를 `(1) (2)`에서 `① ②`로 바꿈(`ENUMERATORS`). 평가기가 요약·3·4·5장에서 `(n)`을 인용으로도 읽기 때문에, 문단 중간의 `(2)`가 인용 2번으로 잘못 세어지는 것을 막는다
+  - 조판 쪽 변경(Pretendard, 표 제목, 쪽 번호, `compact_citations`, 수준 3)은 그대로
+- `src/skala_rag/agents/llm_output.py` (자동 병합됨, 의미 조정)
+  - `bracketed` 삭제와 호출 2곳 원복: `(n)` 표시를 `[n]`으로 되돌리는 함수인데 데이터가 이미 `[n]`이다. 남겨 두면 본문의 `(2024)`가 아닌 `(12)` 같은 괄호 숫자를 인용으로 바꿀 수 있다
+  - `LLMReportAgent` 시스템 메시지의 "본문에는 근거 번호가 (번호)로 표시돼 있다" 문장을 원래 문장으로 되돌림(본문이 `[번호]`를 쓰므로 맞지 않는 설명)
+- `tests/test_output.py` (충돌 2곳)
+  - 3장 단언: 양쪽 기대값의 차이는 표기뿐 → `…긴 문맥 미검증 [1].`
+  - 파일 끝: 조판 쪽 `test_adjacent_citations_are_merged_for_display_only`와 품질 평가기 쪽 범위 테스트가 같은 자리에 추가됨 → 둘 다 남기고, 뒤쪽은 "데이터는 번호마다 대괄호 하나, 그릴 때만 묶음"을 확인하는 테스트로 바꿈
+  - 그 밖의 `(1)`·"각주" 단언을 `[1]`·"부록"으로 맞춤
+- `tests/test_llm_output.py`: `shown` 도우미가 아무것도 바꾸지 않게 하고(`[1]`이 그대로 남음), `bracketed` 테스트 2개 삭제
+
+**남의 파일**:
+- `tests/test_quality.py` (품질 평가 담당 소유) — 보고서 작성기의 출력 형식에 기대던 도우미와 테스트 3곳만 고침. 평가기 자체(`quality.py`)는 한 글자도 바꾸지 않았다
+  - `EVIDENCE_SECTION = "부록"` 추가, `footnote_rows`·`as_evidence_ids`와 절 필터가 "각주" 대신 이 값을 씀
+  - `as_evidence_ids`: `(n)` 대신 `[n]`을 근거 ID로 되돌림
+  - `test_a_run_of_citations_is_written_as_a_range_…` → `test_every_number_in_a_run_of_citations_is_verified`: 데이터에 범위가 없으므로 "연속한 번호 5개가 대괄호 하나씩 있고, 가운데 번호의 근거 행을 지우면 잡힌다"를 확인
+  - `test_judge_quotes_without_a_range_marker_are_still_found` → `test_judge_quotes_without_citation_numbers_are_still_found`
+  - 평가기의 `(n)`·범위 해석을 직접 확인하는 단위 테스트는 그대로 두었고 모두 통과한다
+
+**버린 변경**: 품질 평가기 브랜치의 표기 선택(`(n)`, 데이터 수준의 `(1)-(7)` 범위, 절 이름 "각주")과 그것을 위한 `bracketed`/`expand_markers`. 표기를 `[n]`으로 통일하기로 한 결정에 따른 것이며, 그 변경이 풀려던 문제(문장 중간의 인용, 긴 인용 나열)는 절 끝 배치와 렌더링 단계 묶기로 해결된다. 평가기의 `(n)` 해석 기능은 남아 있어 나중에 표기를 바꿔도 평가기는 그대로 쓸 수 있다.
+
+**충돌 시 지켜야 할 것**:
+- `format_markers`가 데이터에 범위나 `(n)`을 쓰도록 되돌리려면 5장 항목 번호와의 혼동, `compact_citations`와의 중복을 함께 해결해야 한다
+- `number_citations`를 제자리 치환으로 되돌리지 않는다(인용이 다시 문장 중간에 낀다)
+- 5장 항목 번호를 `(1)` 형태로 되돌리지 않는다. 평가기가 인용으로 읽는다
+- 근거 목록 절의 제목은 "부록" 또는 "각주"로 시작해야 평가기가 읽는다
+
+**확인**: `git diff --check` 통과, pytest 137 passed(tests/tools·evaluation·agents 제외), `app.py --mode replay --fixture` 정상. 근거 60건 State로 만든 보고서를 평가기에 넣어 Groundedness 5·중립성 5·커버리지 5 확인(인용과 근거 목록이 서로 맞게 읽힘). 쪽수: 근거 60건 9쪽, 근거 90건 10쪽
+
+## 2026-10-07 15:27 · sup/merge-quality · deogi
+
+**무엇을**: PDF·HTML에 그릴 때 인용 번호를 묶는 모양을 `[1–3, 5]`에서 IEEE 방식 `[1]–[3], [5]`로 변경
+
+**왜**: 번호마다 대괄호를 따로 쓰는 것이 IEEE 공식 양식이다. 앞서 쓴 `[1–3]`은 다른 번호식 양식(ACM 등)의 표기였다.
+
+**바꾼 파일**:
+- `src/skala_rag/agents/report.py` — `compact_citations`: 연속한 번호 3개 이상은 `[a]–[b]`, 나머지는 쉼표로 구분한 `[a], [b]`
+- `tests/test_output.py` — 기대값 5곳 수정
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: 없음. 보고서 데이터(`report["sections"]`)와 Markdown은 여전히 번호마다 대괄호 하나를 공백으로 구분해 쓴다(`[1] [2] [3]`)
+
+**충돌 시 지켜야 할 것**: 이 묶기를 보고서 데이터에 적용하지 않는다. 렌더링 단계(`_write_pdf`, HTML 템플릿의 `cite` 필터)에서만 쓴다
+
+**확인**: pytest 137 passed, fixture 실행 정상, 근거 60건 9쪽·근거 90건 10쪽

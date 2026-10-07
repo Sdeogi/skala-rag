@@ -73,7 +73,7 @@ def test_llm_insights_replace_chapter_five_and_fall_back_independently_of_the_su
     insights = ["KIVI는 도입 발표와 운영 우려가 엇갈리며 대규모 배포 조건에서만 확인됐다 [1].", "적용 전에 운영 부담을 다시 확인해야 한다 [1]."]
     good = LLMReportAgent(FakeModel({"summary": summary, "insights": insights}))(state)
     chapter = next(section for section in good["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
-    assert chapter[1:] == insights and chapter[0].startswith("관점 간 상충 쌍")
+    assert chapter[1:] == shown_all(insights) and chapter[0].startswith("관점 간 상충 쌍")
     assert good["generation_mode"] == "llm_assisted" and good["llm_sections"] == {"summary": True, "insights": True}
 
     ranked = LLMReportAgent(FakeModel({"summary": summary, "insights": ["KIVI가 더 우수하다 [1].", "둘째 문단 [1]."]}))(state)
@@ -83,7 +83,7 @@ def test_llm_insights_replace_chapter_five_and_fall_back_independently_of_the_su
 
     partial = LLMReportAgent(FakeModel({"summary": "KIVI는 2029년에 입증되었다 [1].", "insights": insights}))(state)
     assert partial["generation_mode"] == "llm_partial" and partial["llm_sections"] == {"summary": False, "insights": True}
-    assert "2029" not in partial["markdown"] and insights[0] in partial["markdown"]
+    assert "2029" not in partial["markdown"] and shown(insights[0]) in partial["markdown"]
 
     long = LLMReportAgent(FakeModel({"summary": summary, "insights": [insights[0]] * 2 + ["KIVI " + "가" * 1700 + " [1]."]}))(state)
     kept = next(section for section in long["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
@@ -125,6 +125,15 @@ def reviewed_state(action, instructions):
     return state
 
 
+def shown(text):
+    """LLM text cites ``[1]`` before the closing period; the finished report keeps the number at the end of the clause."""
+    return text
+
+
+def shown_all(texts):
+    return [shown(text) for text in texts]
+
+
 def chapter(report, heading):
     return next(section for section in report["sections"] if section["heading"] == heading)["paragraphs"]
 
@@ -135,8 +144,8 @@ def test_llm_rewrites_only_the_instructed_section_and_keeps_the_other_llm_text()
     model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
     report = LLMReportAgent(model)(state)
     assert model.calls == 1
-    assert chapter(report, "SUMMARY") == [SUMMARY_V1]  # not instructed: the previous LLM text stays
-    assert chapter(report, "5. 시사점")[1:] == INSIGHTS_V2 and "유리하다" not in report["markdown"]
+    assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]  # not instructed: the previous LLM text stays
+    assert chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2) and "유리하다" not in report["markdown"]
     assert report["revision"]["number"] == 1 and report["revision"]["applied"][0]["result"] == "rewritten"
     assert report["llm_sections"] == {"summary": True, "insights": True} and report["generation_mode"] == "llm_assisted"
 
@@ -170,7 +179,7 @@ def test_flagged_sentence_in_a_rule_based_section_is_rewritten_not_deleted():
     assert model.schemas == ["SentenceFixes"]  # SUMMARY and chapter 5 were not instructed: no report call
     assert market_reason(report) == "공개 발표에서 도입이 보고됐다"
     assert report["revision"]["applied"] == [{"item": "groundedness", "section": "4.1 시장성", "quote": "서비스 도입", "result": "replaced"}]
-    assert chapter(report, "SUMMARY") == [SUMMARY_V1] and chapter(report, "5. 시사점")[1:] == INSIGHTS_V1
+    assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)] and chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V1)
     assert report["metrics"][0]["purpose"] == "sentence_fix" and report["metrics"][0]["fixes_accepted"] == 1
     assert report["generation_mode"] == "llm_assisted"
 
@@ -200,8 +209,8 @@ def test_whole_section_rewrite_and_sentence_fix_are_combined_in_one_revision():
     report = LLMReportAgent(model)(state)
     assert model.schemas == ["SentenceFixes", "ReportDraft"]
     assert [record["result"] for record in report["revision"]["applied"]] == ["rewritten", "replaced"]
-    assert chapter(report, "5. 시사점")[1:] == INSIGHTS_V2 and market_reason(report) == "공개 발표에서 도입이 보고됐다"
-    assert chapter(report, "SUMMARY") == [SUMMARY_V1]
+    assert chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2) and market_reason(report) == "공개 발표에서 도입이 보고됐다"
+    assert chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]
 
 
 def test_rewrite_that_repeats_the_flagged_sentence_falls_back_to_the_rule_based_chapter():
@@ -209,14 +218,14 @@ def test_rewrite_that_repeats_the_flagged_sentence_falls_back_to_the_rule_based_
     state = reviewed_state("rewrite_report", [instruction])
     report = LLMReportAgent(FakeModel({"summary": SUMMARY_V1, "insights": INSIGHTS_V1}))(state)
     assert "repeats a sentence flagged" in report["insights_fallback_reason"] and "유리하다" not in report["markdown"]
-    assert report["llm_sections"] == {"summary": True, "insights": False} and chapter(report, "SUMMARY") == [SUMMARY_V1]
+    assert report["llm_sections"] == {"summary": True, "insights": False} and chapter(report, "SUMMARY") == [shown(SUMMARY_V1)]
 
 
 def test_accept_with_limits_keeps_llm_texts_without_calling_the_model():
     state = reviewed_state("accept_with_limits", [])
     model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
     report = LLMReportAgent(model)(state)
-    assert model.calls == 0 and chapter(report, "SUMMARY") == [SUMMARY_V1] and chapter(report, "5. 시사점")[1:] == INSIGHTS_V1
+    assert model.calls == 0 and chapter(report, "SUMMARY") == [shown(SUMMARY_V1)] and chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V1)
     assert any(p.startswith("품질 평가 미달 항목") and "중립성 2점" in p for p in chapter(report, "6. 한계점"))
 
 
@@ -225,4 +234,4 @@ def test_recollect_regenerates_both_llm_sections_with_the_instructions():
     state = reviewed_state("recollect", [instruction])
     model = FakeModel({"summary": "KIVI 요약을 새로 썼다 [1].", "insights": INSIGHTS_V2})
     report = LLMReportAgent(model)(state)
-    assert model.calls == 1 and chapter(report, "SUMMARY") == ["KIVI 요약을 새로 썼다 [1]."] and chapter(report, "5. 시사점")[1:] == INSIGHTS_V2
+    assert model.calls == 1 and chapter(report, "SUMMARY") == [shown("KIVI 요약을 새로 썼다 [1].")] and chapter(report, "5. 시사점")[1:] == shown_all(INSIGHTS_V2)
