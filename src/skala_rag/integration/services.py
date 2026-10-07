@@ -32,10 +32,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from skala_rag.graph.schemas import LABELS, UNKNOWN_LABELS
 from skala_rag.graph.workflow import PipelineServices
+from skala_rag.integration.rework import build_rework_queries, needs_research
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,38 @@ DEFAULT_INDEX_DIR = "indexes"
 TRL_ESTIMATION_NOTE = "공개 정보 기반 추정. 논문 발표 시점과 실제 채택 시점 사이에 시차가 있어 확정 단계가 아님"
 NOTE_LIMIT = 220
 _RETRIEVE_LOCK = threading.Lock()  # the four perspective nodes run in threads; FAISS/e5 access is serialized
+
+# arXiv IDs of the two covered techniques; used by the rework query builder to narrow
+# searches when the Supervisor flags claims as unsupported.
+_TECH_PAPER_IDS: dict[str, str] = {"KIVI": "2402.02750", "InfiniGen": "2406.19707"}
+
+# Judgment-field name → agent topic key for stakeholder (market's fields already equal topic names).
+_STAKEHOLDER_FIELD_TO_TOPIC: dict[str, str] = {
+    "competitor_view": "competitors",
+    "adopter_view": "adopters",
+    "investor_view": "industry_media",
+}
+
+
+def _field_to_topic(perspective: str, field: str) -> str:
+    if perspective == "market":
+        return field
+    if perspective == "stakeholder":
+        return _STAKEHOLDER_FIELD_TO_TOPIC.get(field, "")
+    return ""
+
+
+def _merge_search_log(prior: dict[str, dict[str, list[str]]], new: dict[str, dict[str, list[str]]]) -> dict[str, dict[str, list[str]]]:
+    """Combine per-technology query logs so a later rework knows what has been tried."""
+    merged: dict[str, dict[str, list[str]]] = {}
+    technologies = set(prior) | set(new)
+    for tech in technologies:
+        combined = dict(prior.get(tech) or {})
+        for field, queries in (new.get(tech) or {}).items():
+            combined[field] = list(dict.fromkeys([*(combined.get(field) or []), *queries]))
+        if combined:
+            merged[tech] = combined
+    return merged
 
 
 @dataclass
@@ -571,9 +605,14 @@ def make_technical(settings: IntegrationSettings, branches: _Branches):
 def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Branches):
     """B's market/stakeholder agents already return D-shaped results.
 
-    Each technology is collected separately so one failure (missing replay cache,
-    search API error) degrades that technology to 미확인 instead of dropping the
-    whole perspective. Repair rounds re-run only the failing technologies.
+    First pass: collect all three fields for every technology; one technology's
+    collection failure degrades only that technology to 미확인. On a rework pass the
+    Supervisor names the (technology, field) pairs that still need evidence; we build
+    fresh queries from each request's reasons/review_reason/question (via
+    ``rework.build_rework_queries``) and re-collect only those field/topic pairs.
+    Fields flagged with purely re-judge reasons (``wrong_technology``,
+    ``unknown_evidence``, ``invalid_label``, …) keep their previous judgment untouched
+    because no new web traffic would change the label.
     """
     runner = branches.market_agent if name == "market" else branches.stakeholder_agent
     kwargs = settings.market_kwargs if name == "market" else settings.stakeholder_kwargs
@@ -581,30 +620,64 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
     def service(state: Mapping[str, Any]) -> dict[str, Any]:
         technologies = _technologies(state)
         is_rework = _is_rework(state, name)
-        previous = (state.get(f"{name}_analysis") or {}).get("technologies") if is_rework else None
+        previous_analysis = state.get(f"{name}_analysis") or {}
+        previous = (previous_analysis.get("technologies") or {}) if is_rework else {}
+        prior_search_log: dict[str, dict[str, list[str]]] = {
+            str(tech): {str(field): [str(query) for query in queries] for field, queries in (fields or {}).items()}
+            for tech, fields in ((previous_analysis.get("search_log") or {}) if is_rework else {}).items()
+        }
         judgments: dict[str, dict[str, dict[str, Any]]] = {tech: dict((previous or {}).get(tech) or {}) for tech in technologies}
         evidence: dict[str, Any] = {}
         sources: dict[str, Any] = {}
         errors: dict[str, Any] = {}
         metrics: dict[str, Any] = {}
-        targets = _retry_technologies(state, name, technologies)
-        if is_rework and previous:
-            # B's agents search fixed query templates, not the missing questions, so repeating a
-            # successful collection would repeat the same searches (and API budget) for the same
-            # outcome. Only technologies whose collection itself failed are collected again.
-            targets = [tech for tech in targets if _collection_failed(judgments.get(tech) or {})]
-            metrics["repair_skipped"] = len(_retry_technologies(state, name, technologies)) - len(targets)
-            if not targets:
-                return {
-                    f"{name}_analysis": _perspective_result(name, judgments, technologies),
-                    "evidence": {},
-                    "sources": {},
-                    "errors": {},
-                    "metrics": metrics,
-                }
+        new_search_log: dict[str, dict[str, list[str]]] = {}
+
+        if is_rework:
+            research_by_tech: dict[str, list[dict[str, Any]]] = {}
+            for request in _rework_requests(state, name):
+                tech = str(request.get("technology") or "")
+                if tech not in technologies:
+                    continue
+                if needs_research(request):
+                    research_by_tech.setdefault(tech, []).append(request)
+            targets = [tech for tech in technologies if tech in research_by_tech]
+        else:
+            research_by_tech = {}
+            targets = _retry_technologies(state, name, technologies)
+
         for tech in targets:
+            tech_requests = research_by_tech.get(tech, [])
+            runtime_kwargs: dict[str, Any] = {}
+            if is_rework and tech_requests:
+                queries_by_topic: dict[str, list[str]] = {}
+                topic_set: list[str] = []
+                for request in tech_requests:
+                    field = str(request.get("field") or "")
+                    topic = _field_to_topic(name, field)
+                    if not topic:
+                        continue
+                    prior_for_field = list(prior_search_log.get(tech, {}).get(field, []))
+                    fresh = build_rework_queries(request, prior_for_field, paper_id=_TECH_PAPER_IDS.get(tech))
+                    if fresh:
+                        queries_by_topic.setdefault(topic, []).extend(fresh)
+                    if topic not in topic_set:
+                        topic_set.append(topic)
+                    new_search_log.setdefault(tech, {})[field] = list(dict.fromkeys([*prior_for_field, *fresh]))
+                if not topic_set:
+                    continue
+                runtime_kwargs["topics"] = tuple(topic_set)
+                if queries_by_topic:
+                    runtime_kwargs["queries_by_topic"] = queries_by_topic
+
             try:
-                result = runner(technologies=(tech,), mode=_mode(state), **_cache_kw(settings.cache_dir), **kwargs)
+                result = runner(
+                    technologies=(tech,),
+                    mode=_mode(state),
+                    **_cache_kw(settings.cache_dir),
+                    **kwargs,
+                    **runtime_kwargs,
+                )
             except Exception as exc:
                 errors[_round_key(state, f"{name}-{tech}-collect", name, tech)] = {
                     "node": name,
@@ -613,14 +686,31 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
                     "recovered": False,
                     "kind": "service",
                 }
-                judgments[tech] = {
-                    field: {"label": "미확인", "reason": f"{COLLECTION_FAILURE_PREFIX}({type(exc).__name__})로 판정하지 못함", "conditions": "", "evidence_ids": []}
-                    for field in LABELS[name]
+                fallback = {
+                    "label": "미확인",
+                    "reason": f"{COLLECTION_FAILURE_PREFIX}({type(exc).__name__})로 판정하지 못함",
+                    "conditions": "",
+                    "evidence_ids": [],
                 }
+                if is_rework and tech_requests:
+                    for request in tech_requests:
+                        field = str(request.get("field") or "")
+                        if field in LABELS[name]:
+                            judgments[tech][field] = dict(fallback)
+                else:
+                    judgments[tech] = {field: dict(fallback) for field in LABELS[name]}
                 metrics["failures"] = metrics.get("failures", 0) + 1
                 continue
+
             analysis = result.get(f"{name}_analysis") or {}
-            judgments[tech] = dict((analysis.get("technologies") or {}).get(tech) or judgments[tech])
+            new_tech_judgments = dict((analysis.get("technologies") or {}).get(tech) or {})
+            if is_rework and tech_requests:
+                for request in tech_requests:
+                    field = str(request.get("field") or "")
+                    if field in new_tech_judgments:
+                        judgments[tech][field] = new_tech_judgments[field]
+            elif new_tech_judgments:
+                judgments[tech] = new_tech_judgments
             evidence.update(result.get("evidence") or {})
             sources.update(result.get("sources") or {})
             for key, value in (result.get("errors") or {}).items():
@@ -628,8 +718,13 @@ def make_web_perspective(name: str, settings: IntegrationSettings, branches: _Br
             for key, value in (result.get("metrics") or {}).items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     metrics[key] = metrics.get(key, 0) + value
+
+        perspective_result = _perspective_result(name, judgments, technologies)
+        merged_log = _merge_search_log(prior_search_log, new_search_log)
+        if merged_log:
+            perspective_result["search_log"] = merged_log
         return {
-            f"{name}_analysis": _perspective_result(name, judgments, technologies),
+            f"{name}_analysis": perspective_result,
             "evidence": evidence,
             "sources": sources,
             "errors": errors,
@@ -645,23 +740,62 @@ def make_domain(settings: IntegrationSettings, branches: _Branches):
         from skala_rag.prompts.domain import DOMAIN_RUBRIC
 
         technologies = _technologies(state)
+        is_rework = _is_rework(state, "domain")
         wanted = _retry_items(state, "domain")
-        previous = (state.get("domain_analysis") or {}).get("technologies") if _is_rework(state, "domain") else None
+        previous_analysis = state.get("domain_analysis") or {}
+        previous = previous_analysis.get("technologies") if is_rework else None
+        prior_search_log: dict[str, dict[str, list[str]]] = {
+            str(tech): {str(field): [str(query) for query in queries] for field, queries in (fields or {}).items()}
+            for tech, fields in ((previous_analysis.get("search_log") or {}) if is_rework else {}).items()
+        }
         judgments: dict[str, dict[str, dict[str, Any]]] = {tech: dict((previous or {}).get(tech) or {}) for tech in technologies}
         collector = _EvidenceCollector(state, branches)
         model = _model_id(state, settings)
+        rework_by_item: dict[tuple[str, str], dict[str, Any]] = {}
+        if is_rework:
+            for request in _rework_requests(state, "domain"):
+                tech = str(request.get("technology") or "")
+                field = str(request.get("field") or "")
+                if tech and field:
+                    rework_by_item[(tech, field)] = request
+        new_search_log: dict[str, dict[str, list[str]]] = {}
         llm_calls = 0
         for tech in technologies:
             for spec in DOMAIN_RUBRIC:
                 if wanted is not None and (tech, spec.item_key) not in wanted:
                     continue
-                query = spec.query_hints_by_tech.get(tech) or f"{tech} {spec.question}"
-                candidates = collector.retrieve(query, tech, settings.k_rag)
-                item = branches.judge_domain(spec, _tech_enum(tech), candidates, model)
+                default_query = spec.query_hints_by_tech.get(tech) or f"{tech} {spec.question}"
+                request = rework_by_item.get((tech, spec.item_key))
+                if request and needs_research(request):
+                    prior = list(prior_search_log.get(tech, {}).get(spec.item_key, []))
+                    if default_query and default_query not in prior:
+                        prior.append(default_query)
+                    extra = build_rework_queries(request, prior, paper_id=_TECH_PAPER_IDS.get(tech))
+                    queries = extra or [default_query]
+                    k_each = settings.k_rag + 3  # widen the candidate pool on rework
+                    new_search_log.setdefault(tech, {})[spec.item_key] = list(dict.fromkeys([*prior, *extra]))
+                else:
+                    queries = [default_query]
+                    k_each = settings.k_rag
+                all_candidates: list[Any] = []
+                seen_ids: set[str] = set()
+                for query in queries:
+                    for candidate in collector.retrieve(query, tech, k_each):
+                        candidate_id = str(getattr(candidate, "evidence_id", ""))
+                        if candidate_id and candidate_id in seen_ids:
+                            continue
+                        if candidate_id:
+                            seen_ids.add(candidate_id)
+                        all_candidates.append(candidate)
+                item = branches.judge_domain(spec, _tech_enum(tech), all_candidates, model)
                 llm_calls += 1
                 judgments[tech][spec.item_key] = _judgment_from_item(item)
+        result = _perspective_result("domain", judgments, technologies)
+        merged_log = _merge_search_log(prior_search_log, new_search_log)
+        if merged_log:
+            result["search_log"] = merged_log
         return {
-            "domain_analysis": _perspective_result("domain", judgments, technologies),
+            "domain_analysis": result,
             "evidence": collector.evidence,
             "sources": collector.sources,
             "errors": collector.error_records("domain", state),
@@ -678,26 +812,89 @@ def make_trl(settings: IntegrationSettings, branches: _Branches):
         technologies = _technologies(state)
         is_rework = _is_rework(state, "trl")
         targets = _retry_technologies(state, "trl", technologies)
-        previous = (state.get("trl_analysis") or {}).get("technologies") if is_rework else None
+        previous_analysis = state.get("trl_analysis") or {}
+        previous = previous_analysis.get("technologies") if is_rework else None
+        prior_search_log: dict[str, dict[str, list[str]]] = {
+            str(tech): {str(field): [str(query) for query in queries] for field, queries in (fields or {}).items()}
+            for tech, fields in ((previous_analysis.get("search_log") or {}) if is_rework else {}).items()
+        }
         judgments: dict[str, dict[str, dict[str, Any]]] = {tech: dict((previous or {}).get(tech) or {}) for tech in technologies}
         collector = _EvidenceCollector(state, branches)
         model = _model_id(state, settings)
-        # Repair rounds re-judge with the web pages cached by the first round instead of searching again.
-        mode = "replay" if is_rework else _mode(state)
+        mode = _mode(state)  # keep the run's live/replay choice; no more forced replay on rework
+        rework_by_tech: dict[str, dict[str, Any]] = {}
+        if is_rework:
+            for request in _rework_requests(state, "trl"):
+                tech = str(request.get("technology") or "")
+                if tech:
+                    rework_by_tech[tech] = request
+        new_search_log: dict[str, dict[str, list[str]]] = {}
         llm_calls = 0
         for tech in targets:
+            request = rework_by_tech.get(tech) if is_rework else None
+            prev_stages: dict[str, dict[str, Any]] = (
+                ((judgments[tech].get("trl") or {}).get("stages") or {}) if is_rework else {}
+            )
             stage_results: list[tuple[Any, Any]] = []
             for spec in TRL_STAGES:
-                query = spec.query_hints_by_tech.get(tech) or f"{tech} {spec.description}"
+                prev_stage = prev_stages.get(spec.trl_label) if is_rework else None
+                if prev_stage and prev_stage.get("met"):
+                    # Previously confirmed stage: keep its judgment and skip new searches so
+                    # the rework round focuses budget on genuinely unmet stages.
+                    reused = SimpleNamespace(
+                        verdict=prev_stage.get("verdict") or "충족",
+                        reason=prev_stage.get("reason") or "",
+                        evidence_ids=list(prev_stage.get("evidence_ids") or []),
+                        missing_evidence_note=prev_stage.get("note") or "",
+                    )
+                    stage_results.append((spec, reused))
+                    continue
+
+                default_query = spec.query_hints_by_tech.get(tech) or f"{tech} {spec.description}"
+                if is_rework and request and needs_research(request):
+                    prior = list(prior_search_log.get(tech, {}).get(spec.stage_key, []))
+                    if default_query and default_query not in prior:
+                        prior.append(default_query)
+                    extra = build_rework_queries(request, prior, paper_id=_TECH_PAPER_IDS.get(tech))
+                    queries = extra or [default_query]
+                    new_search_log.setdefault(tech, {})[spec.stage_key] = list(dict.fromkeys([*prior, *extra]))
+                else:
+                    queries = [default_query]
+
+                all_candidates: list[Any] = []
+                seen_ids: set[str] = set()
                 if spec.evidence_mode == "rag":
-                    candidates = collector.retrieve(query, tech, settings.k_rag)
+                    for query in queries:
+                        for candidate in collector.retrieve(query, tech, settings.k_rag):
+                            candidate_id = str(getattr(candidate, "evidence_id", ""))
+                            if candidate_id and candidate_id in seen_ids:
+                                continue
+                            if candidate_id:
+                                seen_ids.add(candidate_id)
+                            all_candidates.append(candidate)
                 else:
                     question = (
                         f"[{spec.trl_label}] {spec.description}. {tech}에 대해 이 단계의 증거(공개 재현 코드, 주류 프레임워크 통합, "
                         "서비스 규모 시연, 상용 출시, 운영 실적)가 원문에 명시되어 있는가? 실제로 보고된 사실만 적어라."
                     )
-                    candidates = collector.web_search(query, tech, question, f"trl-{spec.stage_key}", settings.k_web, settings.fetch_per_stage, mode, settings.cache_dir)
-                judgement = branches.judge_stage(spec, _tech_enum(tech), candidates, model)
+                    for query in queries:
+                        for candidate in collector.web_search(
+                            query,
+                            tech,
+                            question,
+                            f"trl-{spec.stage_key}",
+                            settings.k_web,
+                            settings.fetch_per_stage,
+                            mode,
+                            settings.cache_dir,
+                        ):
+                            candidate_id = str(getattr(candidate, "evidence_id", ""))
+                            if candidate_id and candidate_id in seen_ids:
+                                continue
+                            if candidate_id:
+                                seen_ids.add(candidate_id)
+                            all_candidates.append(candidate)
+                judgement = branches.judge_stage(spec, _tech_enum(tech), all_candidates, model)
                 llm_calls += 1
                 stage_results.append((spec, judgement))
             highest_label = "미확인"
@@ -738,8 +935,12 @@ def make_trl(settings: IntegrationSettings, branches: _Branches):
                 "missing_evidence": missing_notes,
                 "estimation_note": TRL_ESTIMATION_NOTE,
             }
+        trl_result = _perspective_result("trl", judgments, technologies)
+        merged_log = _merge_search_log(prior_search_log, new_search_log)
+        if merged_log:
+            trl_result["search_log"] = merged_log
         return {
-            "trl_analysis": _perspective_result("trl", judgments, technologies),
+            "trl_analysis": trl_result,
             "evidence": collector.evidence,
             "sources": collector.sources,
             "errors": collector.error_records("trl", state),

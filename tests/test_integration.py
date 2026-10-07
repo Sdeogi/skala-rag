@@ -177,24 +177,35 @@ def test_trl_adapter_builds_stage_details_and_web_evidence(papers_dir, tmp_path)
     assert update["metrics"]["web_search_calls"] == 10 and update["metrics"]["fetch_calls"] == 10 and update["metrics"]["llm_calls"] == 14
 
 
-def test_web_perspective_repair_keeps_previous_judgments_without_new_searches(papers_dir, tmp_path):
+def test_web_perspective_rework_recollects_only_requested_fields(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
     services = create_services(settings)
     state = initial_state(mode="live")
     first = services.stakeholder(state)
     state.update(retry_mode=True, retry_count=1, stakeholder_analysis=first["stakeholder_analysis"])
-    state["missing_questions"] = [{"perspective": "stakeholder", "technology": "InfiniGen", "field": "adopter_view", "question": "?", "reasons": ["unsupported_claim"]}]
+    state["missing_questions"] = [
+        {"perspective": "stakeholder", "technology": "InfiniGen", "field": "adopter_view", "question": "?", "reasons": ["missing_evidence"]}
+    ]
     second = services.stakeholder(state)
-    assert settings.stakeholder_agent.calls == [("KIVI",), ("InfiniGen",)]  # no second collection
-    assert second["stakeholder_analysis"]["technologies"] == first["stakeholder_analysis"]["technologies"]
-    assert second["metrics"] == {"repair_skipped": 1} and second["errors"] == {} and list(first["errors"]) == ["stakeholder-x-0"]
+    # The requested (tech, field) triggers one more collection call; untouched techs stay idle.
+    assert settings.stakeholder_agent.calls == [("KIVI",), ("InfiniGen",), ("InfiniGen",)]
+    # KIVI is untouched; InfiniGen's other fields keep their previous judgments.
+    infinigen = second["stakeholder_analysis"]["technologies"]["InfiniGen"]
+    first_infinigen = first["stakeholder_analysis"]["technologies"]["InfiniGen"]
+    assert second["stakeholder_analysis"]["technologies"]["KIVI"] == first["stakeholder_analysis"]["technologies"]["KIVI"]
+    assert infinigen["competitor_view"] == first_infinigen["competitor_view"]
+    assert infinigen["investor_view"] == first_infinigen["investor_view"]
+    # The rework pass records queries in the perspective's search_log so the next round avoids repeats.
+    assert "adopter_view" in second["stakeholder_analysis"]["search_log"]["InfiniGen"]
 
 
-def test_web_perspective_repair_recollects_only_failed_technologies(papers_dir, tmp_path):
+def test_web_perspective_rework_retries_failed_technology(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
     attempts = {"InfiniGen": 0}
+    calls_log: list[tuple[str, ...]] = []
 
     def flaky(technologies=TECHS, mode="live", **kwargs):
+        calls_log.append(tuple(technologies))
         if "InfiniGen" in technologies:
             attempts["InfiniGen"] += 1
             if attempts["InfiniGen"] == 1:
@@ -211,17 +222,20 @@ def test_web_perspective_repair_recollects_only_failed_technologies(papers_dir, 
         {"perspective": "stakeholder", "technology": tech, "field": "adopter_view", "question": "?", "reasons": ["missing_evidence"]} for tech in TECHS
     ]
     second = services.stakeholder(state)
-    assert second["stakeholder_analysis"]["technologies"]["InfiniGen"]["adopter_view"]["label"] == "우려"  # re-collected
-    assert second["stakeholder_analysis"]["technologies"]["KIVI"] == first["stakeholder_analysis"]["technologies"]["KIVI"]  # kept
-    assert second["metrics"]["repair_skipped"] == 1 and attempts["InfiniGen"] == 2
+    assert second["stakeholder_analysis"]["technologies"]["InfiniGen"]["adopter_view"]["label"] == "우려"
+    assert attempts["InfiniGen"] == 2
+    # Both requested technologies are re-collected; the previously-failed InfiniGen attempt counted.
+    assert calls_log == [("KIVI",), ("InfiniGen",), ("KIVI",), ("InfiniGen",)]
 
 
-def test_trl_repair_reads_web_pages_from_cache(papers_dir, tmp_path):
+def test_trl_rework_keeps_live_mode_and_skips_met_stages(papers_dir, tmp_path):
     settings, _ = make_settings(papers_dir, tmp_path)
-    seen_modes = []
+    seen_modes: list[str] = []
+    seen_queries: list[str] = []
 
     def search(query, max_results, mode, cache_dir=None):
         seen_modes.append(mode)
+        seen_queries.append(query)
         return fake_search(query, max_results, mode, cache_dir)
 
     settings.search_results = search
@@ -230,10 +244,16 @@ def test_trl_repair_reads_web_pages_from_cache(papers_dir, tmp_path):
     first = services.trl(state)
     assert set(seen_modes) == {"live"}
     seen_modes.clear()
+    seen_queries.clear()
     state.update(retry_mode=True, retry_count=1, trl_analysis=first["trl_analysis"])
-    state["missing_questions"] = [{"perspective": "trl", "technology": "KIVI", "field": "trl", "question": "?", "reasons": ["unsupported_claim"]}]
+    state["missing_questions"] = [
+        {"perspective": "trl", "technology": "KIVI", "field": "trl", "question": "?", "reasons": ["unsupported_claim"]}
+    ]
     services.trl(state)
-    assert seen_modes and set(seen_modes) == {"replay"} and len(seen_modes) == 5
+    # Rework must honour the run's mode (no more forced replay) and only KIVI is targeted.
+    assert seen_modes and set(seen_modes) == {"live"}
+    assert all("KIVI" in query or "2402.02750" in query for query in seen_queries)
+    assert not any("InfiniGen" in query for query in seen_queries)
 
 
 def test_web_perspective_failure_degrades_to_unknown_labels(papers_dir, tmp_path):
