@@ -46,13 +46,16 @@ def test_llm_synthesis_can_drop_pairs_and_falls_back_on_model_failure():
 def test_llm_report_accepts_grounded_summary_and_rejects_fabricated_citation():
     state = sample_state()
     state["synthesis"] = LLMSynthesisAgent(FakeModel({"pairs": [{"id": "C0", "reason": "r [e1]", "uncertainty": "u [e1]"}]}))(state)
-    good = LLMReportAgent(FakeModel({"summary": "KIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [e1]. TRL 판정은 공개 정보 기반 추정이다 [e1]."}))(state)
-    assert good["markdown"].startswith("# SUMMARY\n\nKIVI의 2비트")
+    good = LLMReportAgent(FakeModel({"summary": "KIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [1]. TRL 판정은 공개 정보 기반 추정이다 [1]."}))(state)
+    assert good["markdown"].startswith("# SUMMARY\n\nKIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [1].")
     assert good["generation_mode"] == "llm_assisted" and good["metrics"][0]["node"] == "report"
-    bad = LLMReportAgent(FakeModel({"summary": "KIVI는 2029년에 입증되었다 [invented]."}))(state)
-    assert "[invented]" not in bad["markdown"]
-    assert bad["generation_mode"] == "deterministic_fallback" and "unknown evidence ID" in bad["fallback_reason"]
-    ranked = LLMReportAgent(FakeModel({"summary": "KIVI가 더 우수하다 [e1]."}))(state)
+    assert good["citation_map"] == {"1": "e1"} and "[e1]" not in good["markdown"]
+    bad = LLMReportAgent(FakeModel({"summary": "KIVI는 2029년에 입증되었다 [9]."}))(state)
+    assert "2029" not in bad["markdown"]
+    assert bad["generation_mode"] == "deterministic_fallback" and "unknown evidence number" in bad["fallback_reason"]
+    raw_id = LLMReportAgent(FakeModel({"summary": "KIVI의 도입 발표가 확인된다 [e1]."}))(state)  # raw IDs are not valid citations any more
+    assert raw_id["generation_mode"] == "deterministic_fallback"
+    ranked = LLMReportAgent(FakeModel({"summary": "KIVI가 더 우수하다 [1]."}))(state)
     assert "ranking" in ranked["fallback_reason"]
 
 
@@ -61,17 +64,17 @@ def test_number_guard_treats_korean_suffixes_consistently():
     assert numbers_in("2 비트, 2-bit, v1.2, 3.5배") == {"2", "3.5"}  # digits glued to a word (v1.2) are excluded on both sides
     state = sample_state()
     state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
-    summary = "KIVI는 2 비트 양자화를 적용한다 [e1]."
+    summary = "KIVI는 2 비트 양자화를 적용한다 [1]."
     assert LLMReportAgent(FakeModel({"summary": summary}))(state)["generation_mode"] == "llm_assisted"
 
 
 def test_overlong_summary_is_trimmed_at_a_sentence_boundary():
-    sentence = "KIVI는 2 비트 양자화를 적용한다 [e1]. "
+    sentence = "KIVI는 2 비트 양자화를 적용한다 [1]. "
     long_summary = sentence * 60  # far beyond the half-page limit
     state = sample_state()
     state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
     report = LLMReportAgent(FakeModel({"summary": long_summary}))(state)
     assert report["generation_mode"] == "llm_assisted" and report.get("summary_trimmed") is True
     text = report["sections"][0]["paragraphs"][0]
-    assert len(text) <= 1200 and text.endswith("[e1].")
+    assert len(text) <= 1200 and text.endswith("[1].")
     assert trim_to_sentences("짧은 문장이다.", 100) == "짧은 문장이다."

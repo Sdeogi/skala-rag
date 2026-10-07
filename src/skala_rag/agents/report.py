@@ -3,8 +3,13 @@
 Chapter order follows the assignment's reference outline: SUMMARY (<= half a
 page), 1 분석 배경, 2 기술 선정, 3 기술 개요, 4 관점별 평가, 5 시사점, 6 한계점,
 appendix of evidence, REFERENCE (only sources actually cited). Every sentence
-about a judgment carries its evidence IDs. The same section model feeds the
+about a judgment carries its evidence. The same section model feeds the
 Markdown, HTML and PDF renderers so the three outputs cannot diverge.
+
+Citations: sections are first written with raw evidence IDs (``[evidence_id]``),
+then ``number_citations`` replaces them with ``[1]``, ``[2]`` in order of first
+appearance. ``report["citation_map"]`` maps each number back to its evidence ID,
+and the appendix and REFERENCE list only what the body actually cites.
 """
 
 from __future__ import annotations
@@ -72,6 +77,7 @@ FONT_CANDIDATES = (
     "C:/Windows/Fonts/malgun.ttf",
 )
 FALLBACK_CID_FONT = "HYSMyeongJo-Medium"
+CITATION_TOKEN = re.compile(r"\[([^\[\]]+)\]")
 _FONT_NAME: str | None = None
 
 
@@ -93,7 +99,36 @@ def _clip(text: Any, limit: int) -> str:
 
 
 def _citations(ids: list[str], evidence: dict[str, Any]) -> str:
+    """Raw-ID citations; ``number_citations`` turns them into numbers at the end."""
     return " ".join(f"[{identifier}]" for identifier in dict.fromkeys(ids) if identifier in evidence)
+
+
+def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Replace ``[evidence_id]`` with ``[n]`` numbered by first appearance.
+
+    Only bracketed tokens that are known evidence IDs are touched, so markers
+    such as ``[상충]`` or ``[REDACTED]`` stay as written. Returns the rewritten
+    sections and ``{"1": evidence_id, ...}``.
+    """
+    numbers: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        identifier = match.group(1)
+        if identifier not in evidence:
+            return match.group(0)
+        return f"[{numbers.setdefault(identifier, str(len(numbers) + 1))}]"
+
+    def rewrite(text: Any) -> str:
+        return CITATION_TOKEN.sub(replace, str(text))
+
+    numbered: list[dict[str, Any]] = []
+    for section in sections:
+        table = section.get("table")
+        paragraphs = [rewrite(paragraph) for paragraph in section.get("paragraphs", [])]
+        if table:
+            table = {**table, "rows": [[rewrite(cell) for cell in row] for row in table.get("rows", [])]}
+        numbered.append({**section, "paragraphs": paragraphs, "table": table})
+    return numbered, {number: identifier for identifier, number in numbers.items()}
 
 
 def _section(heading: str, paragraphs: list[str], table: dict[str, Any] | None = None, level: int = 1) -> dict[str, Any]:
@@ -346,12 +381,15 @@ def _limitations(state: GraphState, synthesis: dict[str, Any]) -> list[str]:
     return paragraphs
 
 
-def _evidence_lines(evidence: dict[str, Any]) -> list[str]:
+def _evidence_lines(evidence: dict[str, Any], citation_map: dict[str, str], source_labels: dict[str, str]) -> list[str]:
+    """Appendix lines for cited evidence only, in citation-number order."""
     lines: list[str] = []
-    for evidence_id, item in sorted(evidence.items()):
+    for number, evidence_id in sorted(citation_map.items(), key=lambda pair: int(pair[0])):
+        item = evidence[evidence_id]
         quote = _clip(item.get("quote") or item.get("claim") or "인용 구절 미기재", QUOTE_LIMIT)
+        source = source_labels.get(item.get("source_id"))
         line = (
-            f"[{evidence_id}] {item.get('technology', '기술 미상')} / 출처 [{item.get('source_id', '출처 미상')}] / "
+            f"[{number}] {item.get('technology', '기술 미상')} / 출처 {f'[{source}]' if source else '미등록'} / "
             f"위치 {item.get('location') or '미기재'} / 유형 {item.get('claim_type', '미기재')}. {quote}"
         )
         if item.get("speaker"):
@@ -375,7 +413,7 @@ def _site_name(url: Any) -> str:
     return match.group(1) if match else ""
 
 
-def format_reference(source_id: str, source: dict[str, Any]) -> str:
+def format_reference(label: str, source: dict[str, Any]) -> str:
     """Assignment format. 논문: 저자(YYYY). 제목. 학회명, URL / 기타: 기관(YYYY-MM-DD). 제목. 사이트명, URL."""
     source_type = str(source.get("source_type") or "web").lower()
     author = source.get("author_or_org") or _site_name(source.get("url")) or "저자 미상"
@@ -389,10 +427,11 @@ def format_reference(source_id: str, source: dict[str, Any]) -> str:
     if source.get("venue"):
         text += f" {source['venue']},"
     text += f" {source['url']}" if source.get("url") else " (URL 미기재)"
-    return f"[{source_id}] {text}"
+    return f"[{label}] {text}"
 
 
-def build_report(state: GraphState) -> dict[str, Any]:
+def build_report(state: GraphState, *, summary: list[str] | None = None) -> dict[str, Any]:
+    """Build the report. ``summary`` replaces the rule-based SUMMARY; it cites raw evidence IDs."""
     config = state["run_config"]
     technologies = config["technologies"]
     evidence = state.get("evidence") or {}
@@ -401,7 +440,7 @@ def build_report(state: GraphState) -> dict[str, Any]:
     has_checks, passed = _passed_items(state)
     title = config.get("report_title") or f"{' · '.join(technologies)} KV cache 최적화 기술 다관점 평가 보고서"
 
-    sections = [_section("SUMMARY", deterministic_summary(state))]
+    sections = [_section("SUMMARY", summary if summary is not None else deterministic_summary(state))]
     sections.append(_section("1. 분석 배경", background_paragraphs(config)))
     selection_text, selection_table = selection_paragraphs(config)
     sections.append(_section("2. 기술 선정", selection_text, selection_table))
@@ -412,7 +451,7 @@ def build_report(state: GraphState) -> dict[str, Any]:
             "4. 관점별 평가",
             [
                 "네 관점의 판정을 기술별·항목별로 정리했다. 판정 라벨은 Rubric에서 정의한 집합 안에서만 고르며, 근거를 찾지 못한 항목은 "
-                "미확인으로 남긴다. 근거 ID는 부록의 근거 목록과 대응하고, 근거 검사를 통과하지 못한 판정에는 (근거 미확인)을 표시했다."
+                "미확인으로 남긴다. 근거 번호는 부록의 근거 목록과 대응하고, 근거 검사를 통과하지 못한 판정에는 (근거 미확인)을 표시했다."
             ],
         )
     )
@@ -427,9 +466,18 @@ def build_report(state: GraphState) -> dict[str, Any]:
         sections.append(_section(f"4.{index} {PERSPECTIVE_TITLES[name]}", paragraphs, {"columns": JUDGMENT_COLUMNS, "rows": rows}, level=2))
     sections.append(_section("5. 시사점", _synthesis_paragraphs(synthesis, evidence)))
     sections.append(_section("6. 한계점", _limitations(state, synthesis)))
-    sections.append(_section("부록. 근거 목록", _evidence_lines(evidence) or ["등록된 근거 없음"]))
-    used_source_ids = sorted({item.get("source_id") for item in evidence.values() if item.get("source_id") in sources})
-    references = [format_reference(source_id, sources[source_id]) for source_id in used_source_ids]
+    # Number the body first: the appendix and REFERENCE list only what the body cites.
+    sections, citation_map = number_citations(sections, evidence)
+    used_source_ids = list(
+        dict.fromkeys(
+            evidence[evidence_id].get("source_id")
+            for _, evidence_id in sorted(citation_map.items(), key=lambda pair: int(pair[0]))
+            if evidence[evidence_id].get("source_id") in sources
+        )
+    )
+    source_labels = {source_id: f"R{index}" for index, source_id in enumerate(used_source_ids, start=1)}
+    sections.append(_section("부록. 근거 목록", _evidence_lines(evidence, citation_map, source_labels) or ["인용된 근거 없음"]))
+    references = [format_reference(source_labels[source_id], sources[source_id]) for source_id in used_source_ids]
     sections.append(_section("REFERENCE", references or ["검증된 출처 없음"]))
 
     sections = _redact(sections)
@@ -437,6 +485,7 @@ def build_report(state: GraphState) -> dict[str, Any]:
         "title": _redact(title),
         "sections": sections,
         "markdown": render_markdown(sections),
+        "citation_map": citation_map,
         "used_source_ids": used_source_ids,
         "generation_mode": "deterministic",
     }

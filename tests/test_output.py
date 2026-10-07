@@ -1,7 +1,7 @@
 import os
 
 from skala_rag.agents.korean import josa
-from skala_rag.agents.report import SUMMARY_LIMIT, build_report, format_reference, save_outputs
+from skala_rag.agents.report import SUMMARY_LIMIT, build_report, format_reference, number_citations, save_outputs
 from skala_rag.agents.synthesis import synthesize
 from skala_rag.graph.workflow import initial_state
 
@@ -46,13 +46,15 @@ def test_report_follows_reference_outline_and_filters_unknown_ids():
     markdown = report["markdown"]
     assert markdown.startswith("# SUMMARY") and "# REFERENCE" in markdown
     assert markdown.rstrip().endswith("https://example.org/paper")
-    assert "[e1]" in markdown and "[bad]" not in markdown and "미확인" in markdown
+    assert "[1]" in markdown and "[e1]" not in markdown and "[bad]" not in markdown and "미확인" in markdown
+    assert report["citation_map"] == {"1": "e1"} and report["used_source_ids"] == ["s1"]
     assert "공개 정보에 근거한 추정" in markdown
     assert "InfiniGen을" in markdown and "KIVI와" in markdown  # particle handling
     assert "| 기술 | 항목 | 판정 |" in markdown
 
 
 def test_reference_format_for_papers_and_web_pages():
+    # the label is the reference number (R1, R2, ...) in a built report
     paper = format_reference("s1", {"title": "KIVI", "author_or_org": "Liu, Z. et al.", "published_at": "2024-02-02", "venue": "ICML 2024", "url": "https://arxiv.org/abs/2402.02750", "source_type": "paper"})
     assert paper == "[s1] Liu, Z. et al.(2024). KIVI. ICML 2024, https://arxiv.org/abs/2402.02750"
     web = format_reference("w1", {"title": "Blog", "author_or_org": "Google Research", "published_at": "2026-03-30", "venue": "Google Research Blog", "url": "https://example.org", "source_type": "web"})
@@ -60,6 +62,35 @@ def test_reference_format_for_papers_and_web_pages():
     assert format_reference("x", {}) == "[x] 저자 미상(발행일 미상). 제목 미상. (URL 미기재)"
     site = format_reference("s", {"title": "Kiwi Blog", "url": "https://www.kiwidata.com/blog/post", "source_type": "web"})
     assert site == "[s] kiwidata.com(발행일 미상). Kiwi Blog. https://www.kiwidata.com/blog/post"
+
+
+def test_citations_are_numbered_by_first_appearance_and_only_cited_items_are_listed():
+    state = base_state()
+    state["sources"]["s2"] = {"title": "Blog", "url": "https://example.org/blog", "source_type": "web"}
+    state["sources"]["s3"] = {"title": "Unused", "url": "https://example.org/unused", "source_type": "web"}
+    state["evidence"]["e2"] = {"technology": "KIVI", "source_id": "s2", "location": "웹", "quote": "second", "claim_type": "reported_fact"}
+    state["evidence"]["e3"] = {"technology": "KIVI", "source_id": "s3", "location": "웹", "quote": "retrieved but never cited", "claim_type": "reported_fact"}
+    state["evidence_check"] = {"items": [{"perspective": "market", "technology": "KIVI", "field": "adoption", "passed": True}]}
+    state["market_analysis"]["technologies"]["KIVI"]["adoption"]["evidence_ids"] = ["e2", "e1"]
+    report = build_report(state)
+    assert report["citation_map"] == {"1": "e2", "2": "e1"}  # order of first appearance (SUMMARY cites e2 first)
+    assert report["used_source_ids"] == ["s2", "s1"]
+    appendix = next(section for section in report["sections"] if section["heading"].startswith("부록"))["paragraphs"]
+    assert len(appendix) == 2 and appendix[0].startswith("[1] KIVI / 출처 [R1]") and appendix[1].startswith("[2] KIVI / 출처 [R2]")
+    references = report["sections"][-1]["paragraphs"]
+    assert len(references) == 2 and references[0].startswith("[R1] ") and references[1].startswith("[R2] Liu, Z. et al.(2024)")
+    assert "never cited" not in report["markdown"] and "unused" not in report["markdown"]
+    market = next(section for section in report["sections"] if section["heading"] == "4.1 시장성")
+    adoption = next(row for row in market["table"]["rows"] if row[0] == "KIVI" and row[1] == "상용화와 채택 현황")
+    assert adoption[-1] == "[1] [2]"
+
+
+def test_number_citations_leaves_non_evidence_brackets_untouched():
+    sections = [{"heading": "h", "paragraphs": ["[상충] 본문 [e9] [REDACTED] [unknown]"], "table": {"columns": ["c"], "rows": [["[e1] [e9]"]]}, "level": 1}]
+    numbered, citation_map = number_citations(sections, {"e1": {}, "e9": {}})
+    assert numbered[0]["paragraphs"] == ["[상충] 본문 [1] [REDACTED] [unknown]"]
+    assert numbered[0]["table"]["rows"] == [["[2] [1]"]] and citation_map == {"1": "e9", "2": "e1"}
+    assert sections[0]["paragraphs"] == ["[상충] 본문 [e9] [REDACTED] [unknown]"]  # input is not mutated
 
 
 def test_trl_stage_details_and_summary_limit():
