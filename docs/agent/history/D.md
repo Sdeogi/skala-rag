@@ -387,3 +387,29 @@
 - `UNKNOWN_ID_SHAPE`를 없애면 논문 표기의 대괄호가 Groundedness를 1점으로 만든다
 
 **확인**: pytest 204 passed. live 4회: 근거 검사 통과 9 → 11 → 13 → 17/24, 커버리지 2 → 4, 편향 통제 2 → 3(통과선 3), 중립성 5 유지, Groundedness 규칙 점수 1 → 5·Judge 점수 2, PDF 9쪽, 오류 89 → 2건
+
+## 2026-10-07 17:11 · sup/live-fixes · deogi
+
+**무엇을**: 제출 전 정리. README를 Supervisor 구조로 다시 쓰고, 쓰지 않는 코드와 의존성을 제거
+
+**왜**: README가 예전 구조(고정 병렬 파이프라인)를 설명하고 있었고 State 스키마 설계와 품질 평가 기준이 없었다. README의 설치 명령(최소 환경)대로 하면 논문 검색 패키지가 없어 `pytest`가 수집 단계에서 멈췄다. 의존성 목록에 이 프로젝트가 import하지 않는 패키지가 20여 개 있었고, 그중 `psycopg2`는 PostgreSQL이 없는 컴퓨터에서 설치가 실패한다.
+
+**바꾼 파일**:
+- `README.md` — 전면 재작성: 패턴 선택 이유와 trade-off, Agents 표, Architecture(새 그래프 도식과 Supervisor의 판단 순서), State Schema(제어/페이로드 구분과 7개 설계 항목), Quality Evaluation(4개 항목의 규칙 검사·LLM Judge·통과 기준·미달 시 처리), Directory Structure, Usage, Contributors
+- `pyproject.toml` — `dependencies`를 실제 import하는 패키지 15개로 축소(이전 36개). `graph` 의존성 그룹 삭제(전체 설치가 가벼워져 최소 환경이 따로 필요 없음). `description` 작성
+- `uv.lock` — 다시 생성(약 3,700줄 감소)
+- `src/skala_rag/evidence_check.py`, `src/skala_rag/supplement.py` — 삭제. 어디서도 import하지 않는 이전 과제의 근거 검사·보완 구현이다(현재는 `graph/evidence_check.py`와 Supervisor의 재작업이 그 역할)
+- `.env.template` — LangSmith 변수를 `LANGSMITH_*` 이름으로, 글꼴 설명 갱신
+- `docs/graph.mmd` — 다시 생성
+
+**남의 파일**: 삭제한 두 파일은 이전 과제에서 다른 담당이 만든 것이다. `grep`으로 import가 없음을 확인하고 삭제했다.
+
+**인터페이스 영향**:
+- 설치 명령이 `uv sync --group dev` 하나로 바뀜(`--only-group graph`는 더 이상 없음)
+- 삭제된 패키지를 쓰는 코드는 없다. `HANDOFF.md`와 `docs/PAPER_RAG_HANDOFF.md`, `docs/GRAPH_OUTPUT_*.md`는 이전 과제의 기록이며 삭제된 두 파일을 언급한다
+
+**충돌 시 지켜야 할 것**:
+- `pyproject.toml`에 패키지를 다시 넣을 때는 실제로 import하는 것만 넣는다. `psycopg2`, `jupyter`, `ragas` 등은 이 저장소 코드가 쓰지 않는다
+- `uv.lock` 충돌은 손으로 풀지 말고 `uv lock`으로 다시 만든다
+
+**확인**: 별도의 깨끗한 환경에 `uv sync --group dev`로 설치(패키지 약 200개) → `pytest -q` 204 passed, `app.py --mode replay --fixture` 정상
