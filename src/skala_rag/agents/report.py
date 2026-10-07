@@ -2,14 +2,18 @@
 
 Chapter order follows the assignment's reference outline: SUMMARY (<= half a
 page), 1 분석 배경, 2 기술 선정, 3 기술 개요, 4 관점별 평가, 5 시사점, 6 한계점,
-appendix of evidence, REFERENCE (only sources actually cited). Every sentence
-about a judgment carries its evidence. The same section model feeds the
-Markdown, HTML and PDF renderers so the three outputs cannot diverge.
+an appendix of evidence (the evidence and source of every citation number),
+REFERENCE (only sources actually cited). Every sentence about a judgment carries its evidence. The same
+section model feeds the Markdown, HTML and PDF renderers so the three outputs
+cannot diverge.
 
 Citations: sections are first written with raw evidence IDs (``[evidence_id]``),
-then ``number_citations`` replaces them with ``[1]``, ``[2]`` in order of first
-appearance. ``report["citation_map"]`` maps each number back to its evidence ID,
-and the appendix and REFERENCE list only what the body actually cites.
+then ``number_citations`` takes them out of the sentence and puts ``[1]``, ``[2]``
+(numbered in order of first appearance) at the end of the clause they belonged to.
+``report["citation_map"]`` maps each number back to its evidence ID, and the
+appendix and REFERENCE list only what the body actually cites. The data keeps
+one bracket per citation; adjacent numbers are merged (``[1–3]``) only when the
+PDF and HTML are drawn.
 
 Revisions: when ``state["quality_result"]`` asks for changes, the instructed
 sentences are replaced with a rewritten sentence when the caller supplies one,
@@ -77,7 +81,8 @@ LAYOUTS = (
     Layout(2, conflicts=2, agreements=0, pair_reason=200, pair_uncertainty=140, pair_condition=60, cell_reason=110, cell_conditions=70, quote=0, list_items=2),
     Layout(3, conflicts=2, agreements=0, pair_reason=150, pair_uncertainty=100, pair_condition=40, cell_reason=80, cell_conditions=45, quote=0, list_items=1),
 )
-SMALL_SECTIONS = ("부록. 근거 목록", "REFERENCE")  # rendered in the small font
+FOOTNOTE_HEADING = "부록. 근거 목록"  # evidence and source of every citation number, placed after the body
+SMALL_SECTIONS = (FOOTNOTE_HEADING, "REFERENCE")  # rendered in the small font
 KEY_FIELDS = (("market", "adoption"), ("stakeholder", "adopter_view"), ("domain", "memory"), ("trl", "trl"))
 JUDGMENT_COLUMNS = ["기술", "항목", "판정", "판정 이유", "성립 조건", "근거"]
 EVIDENCE_COLUMNS = ["번호", "기술", "출처", "위치·유형", "인용 구절"]
@@ -112,6 +117,7 @@ FONT_CANDIDATES = (
 )
 FALLBACK_CID_FONT = "HYSMyeongJo-Medium"
 CITATION_TOKEN = re.compile(r"\[([^\[\]]+)\]")
+TOKEN_WITH_SPACE = re.compile(r"\s*\[([^\[\]]+)\]")  # a citation token with the space in front of it
 # Pretendard (SIL OFL 1.1, license in assets/fonts/OFL.txt) ships with the package so every machine renders the same PDF.
 BUNDLED_FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 BUNDLED_FONT = BUNDLED_FONT_DIR / "Pretendard-Regular.ttf"
@@ -157,23 +163,71 @@ def _citations(ids: list[str], evidence: dict[str, Any]) -> str:
     return " ".join(f"[{identifier}]" for identifier in dict.fromkeys(ids) if identifier in evidence)
 
 
-def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Replace ``[evidence_id]`` with ``[n]`` numbered by first appearance.
+_ABBREVIATIONS = ("Fig", "Figs", "Eq", "Eqs", "Sec", "Tab", "No", "vs", "al", "etc", "cf", "approx")
+_DANGLING_LABEL = re.compile(r"\s*(?:근거|출처)\s*[:：]\s*(?=[.;!?]*\s*$)")
 
-    Only bracketed tokens that are known evidence IDs are touched, so markers
+
+def _clauses(text: str) -> list[str]:
+    """Split at sentence ends and ``;`` outside brackets, keeping the punctuation with its clause."""
+    clauses: list[str] = []
+    for line in str(text).split("\n"):
+        depth = start = 0
+        for index, char in enumerate(line):
+            if char in "([":
+                depth += 1
+            elif char in ")]":
+                depth = max(depth - 1, 0)
+            elif char in ".;!?" and depth == 0 and index + 1 < len(line) and line[index + 1] == " ":
+                word = re.search(r"([A-Za-z]+)$", line[start:index])
+                if char == "." and word and word.group(1) in _ABBREVIATIONS:
+                    continue
+                clauses.append(line[start : index + 1])
+                start = index + 2
+        clauses.append(line[start:])
+    return [clause for clause in clauses if clause.strip()] or [str(text)]
+
+
+def _attach(body: str, marker: str) -> str:
+    """Put ``marker`` (``[1] [2]``) right before the clause's closing punctuation, or at its end."""
+    body = re.sub(r"\s+([.,;:!?])", r"\1", re.sub(r"\s{2,}", " ", _DANGLING_LABEL.sub("", body))).strip()
+    closing = re.search(r"([.;!?]+)$", body)
+    if closing:
+        return f"{body[: closing.start()]} {marker}{closing.group(1)}".lstrip()
+    return f"{body} {marker}".lstrip()
+
+
+def number_citations(sections: list[dict[str, Any]], evidence: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Turn ``[evidence_id]`` into footnote markers ``(1)``, ``(2)`` numbered by first appearance.
+
+    The tokens are taken out of the sentence and the markers are placed at the end of
+    the clause (sentence or ``;`` part) they belonged to, so the text reads without
+    interruptions. A dangling ``근거:`` label left in front of the removed tokens is
+    dropped. Only bracketed tokens that are known evidence IDs are touched, so markers
     such as ``[상충]`` or ``[REDACTED]`` stay as written. Returns the rewritten
     sections and ``{"1": evidence_id, ...}``.
     """
     numbers: dict[str, str] = {}
 
-    def replace(match: re.Match[str]) -> str:
-        identifier = match.group(1)
-        if identifier not in evidence:
-            return match.group(0)
-        return f"[{numbers.setdefault(identifier, str(len(numbers) + 1))}]"
-
     def rewrite(text: Any) -> str:
-        return CITATION_TOKEN.sub(replace, str(text))
+        parts: list[tuple[str, list[str]]] = []  # (clause text without its tokens, marker numbers)
+        for clause in _clauses(str(text)):
+            found: list[str] = []
+
+            def take(match: re.Match[str]) -> str:
+                identifier = match.group(1)
+                if identifier not in evidence:
+                    return match.group(0)
+                found.append(numbers.setdefault(identifier, str(len(numbers) + 1)))
+                return ""
+
+            body = _DANGLING_LABEL.sub("", TOKEN_WITH_SPACE.sub(take, clause)).strip()
+            if found and not body.strip(" ;.!?") and parts:  # "…다. 근거: [1] [2]" keeps its markers on the sentence before
+                parts[-1][1].extend(found)
+            else:
+                parts.append((body, found))
+        return " ".join(
+            _attach(body, format_markers(found)) if found else body for body, found in parts
+        )
 
     numbered: list[dict[str, Any]] = []
     for section in sections:
@@ -192,9 +246,25 @@ REMOVED_NOTE = "(품질 평가 지적에 따라 해당 문장을 삭제했다.)"
 SENTENCE = re.compile(r".+?(?:\.(?=\s|$)|$)(?:\s*\[[^\[\]]+\])*\s*", re.S)
 
 
+def format_markers(numbers: Any) -> str:
+    """Citation markers for a set of numbers, one bracket each in ascending order: ``[1] [2] [5]``.
+
+    The section data never merges numbers into ranges, so every marker can be looked up in
+    ``citation_map`` as it is. ``compact_citations`` merges them when the PDF and HTML are drawn.
+    """
+    return " ".join(f"[{value}]" for value in sorted({int(number) for number in numbers}))
+
+
 def plain_text(text: Any) -> str:
-    """Text without bracketed tokens and extra whitespace: citation numbers and evidence IDs compare equal."""
-    return " ".join(CITATION_TOKEN.sub(" ", str(text or "")).split())
+    """Text without bracketed tokens and extra whitespace.
+
+    Citation numbers and evidence IDs compare equal, so a quote taken from the finished report (numbers at
+    the end of the clause) finds its sentence in the unnumbered sections (raw ``[evidence_id]`` tokens inside
+    the sentence).
+    """
+    plain = " ".join(CITATION_TOKEN.sub(" ", str(text or "")).split())
+    plain = re.sub(r"\s+([.,;:!?)])", r"\1", plain)
+    return re.sub(r"\s*(?:근거|출처)\s*[:：]$", "", plain)  # a "근거: [1] [2]" label is not part of the sentence it follows
 
 
 def revision_plan(state: GraphState) -> dict[str, Any] | None:
@@ -231,7 +301,14 @@ def _covered(text: str, quote: str) -> tuple[list[str], set[int]]:
     found = joined.find(target)
     if found < 0:
         return chunks, set()
-    return chunks, {index for index, start, end in spans if start < found + len(target) and end > found}
+    covered = {index for index, start, end in spans if start < found + len(target) and end > found}
+    # A chunk that only holds citation tokens (a trailing "근거: [1] [2]") belongs to the sentence before it.
+    for index in sorted(covered):
+        follower = index + 1
+        while follower < len(chunks) and not plain_text(chunks[follower]):
+            covered.add(follower)
+            follower += 1
+    return chunks, covered
 
 
 def _replace_quote(text: str, quote: str, replacement: str = "") -> tuple[str, bool]:
@@ -329,7 +406,8 @@ def _quality_limit_lines(state: GraphState) -> list[str]:
     threshold = quality.get("threshold")
     failed = []
     for key, item in (quality.get("items") or {}).items():
-        if not isinstance(item, dict) or item.get("score") is None or (threshold is not None and item["score"] >= threshold):
+        line = item.get("threshold", threshold) if isinstance(item, dict) else threshold  # an item may carry its own pass line
+        if not isinstance(item, dict) or item.get("score") is None or (line is not None and item["score"] >= line):
             continue
         reasons = "; ".join(_clip(reason, 140) for reason in (item.get("reasons") or [])[:2])
         failed.append(f"{QUALITY_ITEM_TITLES.get(key, key)} {item['score']}점" + (f"({reasons})" if reasons else ""))
@@ -545,6 +623,9 @@ def _trl_details(state: GraphState) -> list[str]:
     return lines
 
 
+ENUMERATORS = "①②③④⑤⑥⑦⑧⑨"  # list numbers that cannot be mistaken for citation numbers
+
+
 def _ref_title(ref: dict[str, Any]) -> str:
     return f"{PERSPECTIVE_TITLES.get(ref['perspective'], ref['perspective'])}/{FIELD_TITLES.get(ref['field'], ref['field'])}"
 
@@ -617,7 +698,7 @@ def _synthesis_paragraphs(state: GraphState, synthesis: dict[str, Any], evidence
                 if any(conditions):
                     condition_text = f" 성립 조건: '{conditions[0] or '미기재'}' / '{conditions[1] or '미기재'}'."
             parts.append(
-                f"({index}) {header}{_clip_sentences(pair['reason'], layout.pair_reason)}{condition_text} "
+                f"{ENUMERATORS[(index - 1) % len(ENUMERATORS)]} {header}{_clip_sentences(pair['reason'], layout.pair_reason)}{condition_text} "
                 f"남은 불확실성: {_clip_sentences(pair['uncertainty'], layout.pair_uncertainty)}{(' ' + cite) if cite else ''}"
             )
         if parts:
@@ -719,12 +800,20 @@ def _limitations(state: GraphState, synthesis: dict[str, Any]) -> list[str]:
     return paragraphs
 
 
-def _evidence_table(evidence: dict[str, Any], citation_map: dict[str, str], source_labels: dict[str, str], layout: Layout = LAYOUTS[0]) -> dict[str, Any]:
-    """Appendix table of cited evidence only, in citation-number order."""
+def _evidence_table(
+    evidence: dict[str, Any],
+    citation_map: dict[str, str],
+    source_labels: dict[str, str],
+    layout: Layout = LAYOUTS[0],
+    sources: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Appendix table of cited evidence only, in citation-number order; each row names its source ([R#] → REFERENCE)."""
     rows: list[list[str]] = []
     for number, evidence_id in sorted(citation_map.items(), key=lambda pair: int(pair[0])):
         item = evidence[evidence_id]
         source = source_labels.get(item.get("source_id"))
+        source_record = (sources or {}).get(item.get("source_id")) or {}
+        source_name = _clip(source_record.get("author_or_org") or _site_name(source_record.get("url")), 24)
         quote = _clip(item.get("quote") or item.get("claim") or "인용 구절 미기재", layout.quote) if layout.quote else ""
         if item.get("speaker"):
             speaker = f"발언 주체 {item['speaker']}" + (f"({item['stated_at']})" if item.get("stated_at") else "")
@@ -733,7 +822,7 @@ def _evidence_table(evidence: dict[str, Any], citation_map: dict[str, str], sour
             [
                 f"[{number}]",
                 str(item.get("technology") or "기술 미상"),
-                f"[{source}]" if source else "미등록",
+                (f"[{source}]" + (f" {source_name}" if source_name else "")) if source else "미등록",
                 f"{item.get('location') or '위치 미기재'} / {item.get('claim_type', '유형 미기재')}",
                 quote,
             ]
@@ -793,7 +882,7 @@ def _compose(
             "4. 관점별 평가",
             [
                 "네 관점의 판정을 기술별·항목별로 정리했다. 판정 라벨은 Rubric에서 정의한 집합 안에서만 고르며, 근거를 찾지 못한 항목은 "
-                "미확인으로 남긴다. 근거 번호는 부록의 근거 목록과 대응하고, 근거 검사를 통과하지 못한 판정에는 (근거 미확인)을 표시했다."
+                "미확인으로 남긴다. 본문의 [번호]는 부록 근거 목록의 근거와 출처에 대응하고, 근거 검사를 통과하지 못한 판정에는 (근거 미확인)을 표시했다."
             ],
         )
     )
@@ -825,8 +914,8 @@ def _compose(
         )
     )
     source_labels = {source_id: f"R{index}" for index, source_id in enumerate(used_source_ids, start=1)}
-    appendix = _evidence_table(evidence, citation_map, source_labels, layout)
-    sections.append(_section("부록. 근거 목록", [] if appendix["rows"] else ["인용된 근거 없음"], appendix))
+    footnotes = _evidence_table(evidence, citation_map, source_labels, layout, sources)
+    sections.append(_section(FOOTNOTE_HEADING, [] if footnotes["rows"] else ["인용된 근거 없음"], footnotes))
     references = [format_reference(source_labels[source_id], sources[source_id]) for source_id in used_source_ids]
     sections.append(_section("REFERENCE", references or ["검증된 출처 없음"]))
 
@@ -942,7 +1031,7 @@ def _register_bold_font() -> str:
 def _column_weights(columns: list[str]) -> list[float]:
     weights = {
         "기술": 1.0, "항목": 1.3, "판정": 1.3, "판정 이유": 2.6, "성립 조건": 2.0, "근거": 1.4,
-        "번호": 0.6, "출처": 0.6, "위치·유형": 1.6, "인용 구절": 5.0,
+        "번호": 0.6, "출처": 1.2, "위치·유형": 1.6, "인용 구절": 4.4,
         "비교 축": 1.0, "KIVI (SW)": 2.5, "InfiniGen (HW)": 2.5,
         "지표": 1.2, "값": 1.0, "비교 기준": 1.2, "측정 조건": 2.4, "출처 위치": 1.2,
     }
