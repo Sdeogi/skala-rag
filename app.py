@@ -1,4 +1,4 @@
-"""Command-line entry point for the graph/output branch (design E.2).
+"""Command-line entry point for the supervisor graph.
 
     python app.py --mode replay --fixture --output-dir outputs/demo   # 합성 자료로 흐름 검증
     python app.py --mode live --output-dir outputs/live                # A/B/C 통합 서비스(기본 factory)
@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-output", choices=("auto", "on", "off"), default="auto", help="종합·SUMMARY LLM (auto: live에서만, on: replay에서도 캐시 재생 후 LLM 작성)")
     parser.add_argument("--semantic-review", choices=("auto", "on", "off"), default="auto", help="근거 의미 검토 LLM (auto: live에서만)")
     parser.add_argument("--max-review-calls", type=int, default=72, help="검토 LLM 호출 상한")
-    parser.add_argument("--recursion-limit", type=int, default=50, help="그래프 최대 단계 수")
+    parser.add_argument("--recursion-limit", type=int, default=50, help="그래프 최대 단계 수(Supervisor 결정 상한과 별도의 LangGraph 안전장치)")
     parser.add_argument("--draw-graph", nargs="?", const="-", metavar="PATH", help="그래프 mermaid를 PATH('-'는 표준출력)에 쓰고 종료")
     return parser
 
@@ -147,8 +147,21 @@ def main(argv: list[str] | None = None) -> int:
                 services.semantic_review = LLMSemanticReviewer(ChatOpenAI(model=model_id), max_calls=args.max_review_calls)
         else:
             services.semantic_review = None
-        graph = build_graph(services, output_dir=args.output_dir, report_name=args.report_name)
-        for snapshot in graph.stream(last_state, config={"recursion_limit": args.recursion_limit}, stream_mode="values"):
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        # In-memory checkpoints keyed by run_id: every supervisor decision is persisted
+        # for the life of the process, and the same run_id tags the LangSmith trace and the manifest.
+        graph = build_graph(services, output_dir=args.output_dir, report_name=args.report_name, checkpointer=InMemorySaver())
+        run_id = last_state["run_id"]
+        print(f"run_id: {run_id}")
+        run_config = {
+            "recursion_limit": args.recursion_limit,
+            "run_name": f"skala-rag-{args.mode}",
+            "tags": ["skala-rag", args.mode, *(["fixture"] if args.fixture else [])],
+            "metadata": {"run_id": run_id, "mode": args.mode, "technologies": list(args.technologies), "model_id": model_id},
+            "configurable": {"thread_id": run_id},
+        }
+        for snapshot in graph.stream(last_state, config=run_config, stream_mode="values"):
             last_state = snapshot
         result = last_state
     except Exception as exc:

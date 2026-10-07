@@ -2,8 +2,8 @@
 
 Never use its output as a real evaluation result. It exercises every State
 field of the contract (sources with reference metadata, evidence with claim
-types, nested technical findings, TRL stage details) so the whole report
-pipeline can be run without the A/B/C branches.
+types, nested technical findings, TRL stage details) so the whole supervisor
+loop can be run without the real services.
 """
 
 from __future__ import annotations
@@ -76,14 +76,30 @@ def _judgment(name: str, field: str, technology: str) -> dict[str, Any]:
 
 
 def _perspective(name: str, state: dict[str, Any]) -> dict[str, Any]:
+    """Perspective service. Receives only ``run_config``, ``{name}_analysis``,
+    ``rework_requests`` and ``known_evidence_ids`` (the supervisor's Send payload).
+
+    On rework it keeps the previous judgments and re-emits only the requested
+    (technology, field) items, like a real agent that re-collects evidence for
+    the items the supervisor flagged.
+    """
     technologies = state["run_config"]["technologies"]
+    requests = [item for item in (state.get("rework_requests") or []) if item.get("perspective") == name]
+    previous = dict(((state.get(f"{name}_analysis") or {}).get("technologies")) or {})
+    if requests and previous:
+        judgments = {technology: dict(fields) for technology, fields in previous.items()}
+        for item in requests:
+            judgments.setdefault(item["technology"], {})[item["field"]] = _judgment(name, item["field"], item["technology"])
+    else:
+        judgments = {technology: {field: _judgment(name, field, technology) for field in LABELS[name]} for technology in technologies}
     return {
-        f"{name}_analysis": {
-            "perspective": name,
-            "technologies": {technology: {field: _judgment(name, field, technology) for field in LABELS[name]} for technology in technologies},
-            "status": "complete",
+        f"{name}_analysis": {"perspective": name, "technologies": judgments, "status": "complete"},
+        "metrics": {
+            "web_search_calls": 0 if name in ("domain",) else 2,
+            "retrieve_calls": 2 if name in ("domain",) else 0,
+            "rework_items": len(requests),
+            "known_evidence": len(state.get("known_evidence_ids") or []),
         },
-        "metrics": {"web_search_calls": 0 if name in ("domain",) else 2, "retrieve_calls": 2 if name in ("domain",) else 0},
     }
 
 
