@@ -67,19 +67,19 @@ def describe_pair(kind: str, first: dict[str, Any], second: dict[str, Any]) -> t
     reason_second = _clip(second.get("reason")) or "이유 미기재"
     if kind == "conflict":
         reason = (
-            f"{_title(first)}은 '{reason_first}'를 근거로 '{first['label']}'로 판정한 반면, "
-            f"{_title(second)}은 '{reason_second}'를 근거로 '{second['label']}'로 판정해 방향이 엇갈린다."
+            f"{_title(first)} 판정은 '{first['label']}'(이유: {reason_first})인 반면, "
+            f"{_title(second)} 판정은 '{second['label']}'(이유: {reason_second})이어서 방향이 엇갈린다."
         )
     else:
         reason = (
-            f"{_title(first)}('{first['label']}')과 {_title(second)}('{second['label']}')이 같은 방향을 가리킨다. "
-            f"전자는 '{reason_first}', 후자는 '{reason_second}'를 근거로 든다."
+            f"{_title(first)} 판정 '{first['label']}'(이유: {reason_first}), "
+            f"{_title(second)} 판정 '{second['label']}'(이유: {reason_second}): 두 판정이 같은 방향을 가리킨다."
         )
     condition_first = _clip(first.get("conditions")) or "조건 미기재"
     condition_second = _clip(second.get("conditions")) or "조건 미기재"
     uncertainty = (
-        f"두 판정의 성립 조건이 각각 '{condition_first}', '{condition_second}'이며, "
-        "근거의 실험 조건과 공개 시점이 같은지는 확인되지 않아 직접 비교에는 한계가 있다."
+        f"성립 조건은 각각 '{condition_first}', '{condition_second}'이며, "
+        "두 근거의 실험 조건과 공개 시점이 같은지는 확인되지 않아 직접 비교에는 한계가 있다."
     )
     return reason, uncertainty
 

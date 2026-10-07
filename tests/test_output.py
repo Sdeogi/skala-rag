@@ -192,8 +192,48 @@ def test_large_report_is_tightened_until_it_fits_the_page_limit():
     assert report["layout"]["fits"] and report["layout"]["pdf_pages"] <= MAX_PDF_PAGES and report["layout"]["level"] > 0
     assert pdf_page_count(report) == report["layout"]["pdf_pages"]
     insights = next(section for section in report["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
-    assert "생략했다" in insights[0] and sum(p.startswith("[상충]") for p in insights) <= LAYOUTS[0].conflicts
+    assert "생략했다" in insights[0]
     assert all(heading in report["markdown"] for heading in ("## 4.1 시장성", "## 4.2 이해관계자", "## 4.3 도메인 적용", "## 4.4 기술 성숙도"))
+
+
+def test_chapter_five_covers_both_technologies_shared_patterns_and_open_points():
+    state = large_state()
+    state["domain_analysis"]["technologies"]["InfiniGen"]["memory"] = {"label": "보고 없음", "reason": "자료 없음", "evidence_ids": []}
+    for item in state["evidence_check"]["items"]:
+        if (item["perspective"], item["technology"], item["field"]) == ("domain", "InfiniGen", "memory"):
+            item["passed"] = False
+    state["synthesis"] = synthesize(state)
+    paragraphs = next(section for section in _compose(state, None, LAYOUTS[0])["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
+    conflicts = [p for p in paragraphs if "관점 간 평가가 엇갈리는 지점" in p]
+    assert [p.split("에서")[0] for p in conflicts] == ["KIVI", "InfiniGen"]  # neither technology fills the chapter alone
+    assert all("(2) " in p and "(3) " not in p and p.count("성립 조건은 각각") == LAYOUTS[0].conflicts // 2 for p in conflicts)
+    assert any(p.startswith("두 기술에 공통으로 나타나는 패턴") for p in paragraphs)
+    closing = paragraphs[-1]
+    assert closing.startswith("클라우드 LLM 서빙에 적용하기 전에 확인이 필요한 지점")
+    assert "KIVI 응답 지연(조건부 보고" in closing and "InfiniGen 도메인 적용(메모리 절감)" in closing
+    assert not any(p.startswith("[상충]") or p.startswith("[일치]") for p in paragraphs)
+
+
+def test_technical_overview_is_one_paragraph_per_technology():
+    state = base_state()
+    state["technical_findings"] = {"KIVI": {"principle": "KV를 2비트로 양자화한다.", "experiment_conditions": ["Llama-2-7B.", "A100"], "performance": ["2.6x memory"], "limitations": ["긴 문맥 미검증"], "evidence_ids": ["e1"]}}
+    section = next(section for section in build_report(state)["sections"] if section["heading"] == "3. 기술 개요")
+    assert section["paragraphs"][0] == "KIVI의 핵심 원리: KV를 2비트로 양자화한다. KIVI의 실험 조건: Llama-2-7B; A100. KIVI의 성능 보고: 2.6x memory. KIVI의 한계: 긴 문맥 미검증. 근거: [1]"
+    assert section["paragraphs"][1] == "InfiniGen: 기술 조사 결과 미확인"
+
+
+def test_limitations_report_evidence_check_coverage_and_single_source_dependence():
+    state = base_state()
+    state["evidence_check"] = {"items": [
+        {"perspective": "market", "technology": "KIVI", "field": "adoption", "passed": True},
+        {"perspective": "domain", "technology": "KIVI", "field": "memory", "passed": True},
+        {"perspective": "domain", "technology": "KIVI", "field": "quality", "passed": False},
+    ]}
+    state["domain_analysis"] = {"technologies": {"KIVI": {"memory": {"label": "적용 가능 보고", "reason": "절감", "evidence_ids": ["e1"]}}}}
+    limits = next(section for section in build_report(state)["sections"] if section["heading"] == "6. 한계점")["paragraphs"]
+    assert any(p.startswith("근거 검사: 판정 항목 3개 중 2개가 근거 확인을 통과했다.") for p in limits)
+    single = next(p for p in limits if p.startswith("단일 출처 의존"))
+    assert "판정 2개 중 2개" in single and "도메인 적용 판정 1개는 해당 기술 논문의 자체 보고" in single
 
 
 def test_small_report_keeps_the_roomiest_layout():

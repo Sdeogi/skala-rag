@@ -17,10 +17,17 @@ def sample_state():
 
 
 def test_llm_synthesis_writes_pair_texts_and_records_metrics():
-    draft = {"pairs": [{"id": "C0", "keep": True, "reason": "도입 발표와 운영 우려가 공존한다 [e1].", "uncertainty": "대규모 배포 조건에서만 확인됐다 [e1]."}]}
-    result = LLMSynthesisAgent(FakeModel(draft))(sample_state())
+    draft = {"pairs": [{"id": "C0", "keep": True, "reason": "도입 발표와 운영 우려가 공존한다 [E1].", "uncertainty": "대규모 배포 조건에서만 확인됐다 [E1]."}]}
+    class Recording(FakeModel):
+        def invoke(self, messages):
+            self.seen = messages
+            return super().invoke(messages)
+
+    model = Recording(draft)
+    result = LLMSynthesisAgent(model)(sample_state())
     assert len(result["conflicts"]) == 1 and result["conflicts"][0]["generation"] == "llm"
-    assert result["conflicts"][0]["reason"].startswith("도입 발표와")
+    assert result["conflicts"][0]["reason"] == "도입 발표와 운영 우려가 공존한다 [e1]."  # alias mapped back to the evidence ID
+    assert '"evidence_id": "E1"' in model.seen[-1].content and '"e1"' not in model.seen[-1].content
     assert result["generation_mode"] == "llm_assisted" and result["llm_review"]["accepted"] == 1
     assert result["metrics"][0]["node"] == "synthesis" and result["metrics"][0]["pairs_accepted"] == 1
 
@@ -45,7 +52,7 @@ def test_llm_synthesis_can_drop_pairs_and_falls_back_on_model_failure():
 
 def test_llm_report_accepts_grounded_summary_and_rejects_fabricated_citation():
     state = sample_state()
-    state["synthesis"] = LLMSynthesisAgent(FakeModel({"pairs": [{"id": "C0", "reason": "r [e1]", "uncertainty": "u [e1]"}]}))(state)
+    state["synthesis"] = LLMSynthesisAgent(FakeModel({"pairs": [{"id": "C0", "reason": "r [E1]", "uncertainty": "u [E1]"}]}))(state)
     good = LLMReportAgent(FakeModel({"summary": "KIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [1]. TRL 판정은 공개 정보 기반 추정이다 [1]."}))(state)
     assert good["markdown"].startswith("# SUMMARY\n\nKIVI의 2비트 양자화 도입 발표와 운영 우려가 함께 확인된다 [1].")
     assert good["generation_mode"] == "llm_assisted" and good["metrics"][0]["node"] == "report"
@@ -57,6 +64,30 @@ def test_llm_report_accepts_grounded_summary_and_rejects_fabricated_citation():
     assert raw_id["generation_mode"] == "deterministic_fallback"
     ranked = LLMReportAgent(FakeModel({"summary": "KIVI가 더 우수하다 [1]."}))(state)
     assert "ranking" in ranked["fallback_reason"]
+
+
+def test_llm_insights_replace_chapter_five_and_fall_back_independently_of_the_summary():
+    state = sample_state()
+    state["synthesis"] = {"agreements": [], "conflicts": [], "limitations": []}
+    summary = "KIVI의 도입 발표와 운영 우려가 함께 확인된다 [1]."
+    insights = ["KIVI는 도입 발표와 운영 우려가 엇갈리며 대규모 배포 조건에서만 확인됐다 [1].", "적용 전에 운영 부담을 다시 확인해야 한다 [1]."]
+    good = LLMReportAgent(FakeModel({"summary": summary, "insights": insights}))(state)
+    chapter = next(section for section in good["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
+    assert chapter[1:] == insights and chapter[0].startswith("관점 간 상충 쌍")
+    assert good["generation_mode"] == "llm_assisted" and good["llm_sections"] == {"summary": True, "insights": True}
+
+    ranked = LLMReportAgent(FakeModel({"summary": summary, "insights": ["KIVI가 더 우수하다 [1].", "둘째 문단 [1]."]}))(state)
+    assert ranked["generation_mode"] == "llm_assisted" and ranked["llm_sections"] == {"summary": True, "insights": False}
+    assert "ranking" in ranked["insights_fallback_reason"] and "더 우수" not in ranked["markdown"]
+    assert ranked["markdown"].startswith("# SUMMARY\n\nKIVI의 도입 발표와")
+
+    partial = LLMReportAgent(FakeModel({"summary": "KIVI는 2029년에 입증되었다 [1].", "insights": insights}))(state)
+    assert partial["generation_mode"] == "llm_partial" and partial["llm_sections"] == {"summary": False, "insights": True}
+    assert "2029" not in partial["markdown"] and insights[0] in partial["markdown"]
+
+    long = LLMReportAgent(FakeModel({"summary": summary, "insights": [insights[0]] * 2 + ["KIVI " + "가" * 1700 + " [1]."]}))(state)
+    kept = next(section for section in long["sections"] if section["heading"] == "5. 시사점")["paragraphs"]
+    assert len(kept) == 3  # the overlong trailing paragraph is dropped, the rest is kept
 
 
 def test_number_guard_treats_korean_suffixes_consistently():
