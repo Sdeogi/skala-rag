@@ -44,3 +44,21 @@
 - `validate_update`의 quote 절단은 `continue` 분기 뒤에 있어야 한다(유효하지 않은 레코드는 여전히 버려야 한다).
 
 **확인**: `pytest -q --ignore=tests/tools --ignore=tests/evaluation --ignore=tests/agents` 70 passed
+
+## 2026-10-07 15:40 · sup/graph-contract · San Kim
+
+**무엇을**: `ReworkRequest.attempt`가 0을 받도록 수정(기본값 0, 0 이상)
+
+**왜**: 품질 평가 노드(C)는 재수집 요청의 `attempt`를 0으로 두고 Supervisor가 채우기로 돼 있는데, 모델이 1 이상만 받아 C의 `recollect` 결과가 검증에서 통째로 버려질 뻔했다. Supervisor는 재수집을 보낼 때 `attempt`를 덮어쓰므로 0을 받아도 문제없다.
+
+**바꾼 파일**:
+- `src/skala_rag/graph/schemas.py` — `ReworkRequest.attempt`: `Field(default=1, ge=1)` → `Field(default=0, ge=0)`
+- `tests/test_schemas.py` — 기본값 0, 음수 거부로 기대값 수정
+
+**남의 파일**: 없음
+
+**인터페이스 영향**: `ReworkRequest.attempt`가 0을 허용한다. Supervisor가 보내는 요청에서는 여전히 1부터 시작한다.
+
+**충돌 시 지켜야 할 것**: `attempt`의 하한을 다시 1로 올리면 C의 재수집 요청이 버려진다.
+
+**확인**: `pytest -q tests/test_schemas.py` 12 passed
